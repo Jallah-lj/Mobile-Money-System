@@ -1,0 +1,38 @@
+[
+    {
+        "id": 1,
+        "sender_phone": "SYSTEM",
+        "receiver_phone": "0792954969",
+        "amount": 1000000.0,
+        "type": "DEPOSIT",
+        "timestamp": "2026-01-13T11:45:23.398541",
+        "description": ""
+    },
+    {
+        "id": 2,
+        "sender_phone": "0792954969",
+        "receiver_phone": "0794417334",
+        "amount": 100000.0,
+        "type": "TRANSFER",
+        "timestamp": "2026-01-13T11:45:46.867369",
+        "description": ""
+    },
+    {
+        "id": 3,
+        "sender_phone": "0794417334",
+        "receiver_phone": "SYSTEM",
+        "amount": 10000.0,
+        "type": "WITHDRAWAL",
+        "timestamp": "2026-01-13T11:48:31.878188",
+        "description": ""
+    },
+    {
+        "id": 4,
+        "sender_phone": "0794417334",
+        "receiver_phone": "0792954969",
+        "amount": 2000.0,
+        "type": "TRANSFER",
+        "timestamp": "2026-01-13T11:51:49.080072",
+        "description": "Health"
+    }
+]
