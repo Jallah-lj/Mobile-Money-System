@@ -1,6 +1,6 @@
 # Mobile Money System
 
-A comprehensive Mobile Money simulation built with Python and Streamlit. This application mimics a real-world fintech platform with features for users and administrators.
+ A comprehensive Mobile Money simulation built with Python and Streamlit. This application mimics a real-world fintech platform with features for users and administrators.
 
 ## 📱 Features
 

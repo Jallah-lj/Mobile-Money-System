@@ -1,0 +1,34 @@
+[
+    {
+        "id": "LEG-1768426325-16167CE5",
+        "transaction_id": "TXN-1768426325-1DECD338",
+        "account_id": "sender",
+        "amount": "-100.0",
+        "timestamp": "2026-01-14T21:32:05.221643",
+        "description": "Transfer Out"
+    },
+    {
+        "id": "LEG-1768426325-8C3B2C98",
+        "transaction_id": "TXN-1768426325-1DECD338",
+        "account_id": "receiver",
+        "amount": "100.0",
+        "timestamp": "2026-01-14T21:32:05.221666",
+        "description": "Transfer In"
+    },
+    {
+        "id": "LEG-1768426325-B371B88D",
+        "transaction_id": "TXN-1768426325-B6A5534B",
+        "account_id": "sender",
+        "amount": "-1.000",
+        "timestamp": "2026-01-14T21:32:05.221710",
+        "description": "Transfer Fee"
+    },
+    {
+        "id": "LEG-1768426325-37825468",
+        "transaction_id": "TXN-1768426325-B6A5534B",
+        "account_id": "SYSTEM_REVENUE",
+        "amount": "1.000",
+        "timestamp": "2026-01-14T21:32:05.221725",
+        "description": "Fee Revenue"
+    }
+]
