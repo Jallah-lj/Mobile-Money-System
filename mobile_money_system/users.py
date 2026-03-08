@@ -1,4 +1,5 @@
 import hashlib
+import os
 import random
 import time
 from typing import Dict, Optional, Tuple
@@ -27,7 +28,11 @@ class UserManager:
         
         # Create Default Admin if not exists
         if "0000000000" not in self.users:
-            admin_pin = hashlib.sha256("admin123".encode()).hexdigest()
+            # Use ADMIN_PIN env variable, or generate a secure random PIN on first run
+            raw_admin_pin = os.environ.get("ADMIN_PIN") or str(random.randint(100000, 999999))
+            admin_pin = hashlib.sha256(raw_admin_pin.encode()).hexdigest()
+            if not os.environ.get("ADMIN_PIN"):
+                print(f"[WARN] No ADMIN_PIN env variable set. Generated one-time admin PIN: {raw_admin_pin}  Please change it immediately.")
             self.users["0000000000"] = User(
                 phone="0000000000",
                 name="System Admin",
@@ -105,11 +110,9 @@ class UserManager:
     def login(self, phone: str, pin: str) -> Optional[User]:
         user = self.users.get(phone)
         if user:
-            # Check hashed pin
             hashed_input = hashlib.sha256(pin.encode()).hexdigest()
-            # Fallback for old plain text pins (optional, but good for dev)
-            if user.pin == hashed_input or user.pin == pin:
-                 return user
+            if user.pin == hashed_input:
+                return user
         return None
 
     def get_user(self, phone: str) -> Optional[User]:
@@ -124,10 +127,6 @@ class UserManager:
         return code
 
     def verify_otp(self, phone: str, code_attempt: str) -> bool:
-        # Master Code for Testing/Development
-        if code_attempt == "123456":
-            return True
-
         record = self.otp_storage.get(phone)
         if not record:
             return False

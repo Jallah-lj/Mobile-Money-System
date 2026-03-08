@@ -86,17 +86,14 @@ class TransactionManager:
              if not sender: return False, "Sender account missing"
              # Receiver might be external (BILL_PAY), handle carefully
              
+             # Debit Receiver if internal user; block reversal if they lack funds
+             if receiver:
+                 if receiver.balance < txn.amount:
+                     return False, f"Cannot reverse: receiver has insufficient balance ({receiver.balance} < {txn.amount})"
+                 receiver.balance -= txn.amount
+
              # Credit Sender
              sender.balance += txn.amount
-             
-             # Debit Receiver if internal User
-             if receiver:
-                 if receiver.balance >= txn.amount:
-                     receiver.balance -= txn.amount
-                 else:
-                     # Force debit into negative? or block?
-                     # For admin force reversal, we usually allow negative or create debt.
-                     receiver.balance -= txn.amount 
              
              self.user_manager.save_users()
              
@@ -426,6 +423,15 @@ class TransactionManager:
         
         if not requester or not payer:
             return False, "User not found"
+
+        if requester.status != "active":
+            return False, f"Requester account is {requester.status}"
+        if payer.status != "active":
+            return False, f"Payer account is {payer.status}"
+        if not requester.is_verified:
+            return False, "Requester KYC not verified"
+        if not payer.is_verified:
+            return False, "Payer KYC not verified"
         
         amount_decimal = Decimal(str(amount))
         if amount_decimal <= 0:
@@ -437,9 +443,7 @@ class TransactionManager:
             amount=amount_decimal, 
             t_type="REQUEST", 
             description=description,
-            currency=requester.currency # Use requester's currency preference?? Or payer's? Usually Payer pays in their currency. 
-            # But the request is FOR an amount. 
-            # Let's assume requester wants their currency.
+            currency=requester.currency  # Request is denominated in the requester's currency
         )
         # Update status to PENDING
         t.status = "PENDING"

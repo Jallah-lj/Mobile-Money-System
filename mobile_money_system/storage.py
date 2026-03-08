@@ -18,7 +18,7 @@ class JsonStorage:
                 content = f.read()
                 if not content:
                     return default
-                return json.load(f)
+                return json.loads(content)
         except (json.JSONDecodeError, IOError):
             return default
 
