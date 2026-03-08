@@ -11,7 +11,7 @@ from mobile_money_system.users import UserManager, User
 class MockUserManagerCompliance:
     def __init__(self):
         self.users = {
-            "verified_sender": User("verified_sender", "Ver Sender", "1234", Decimal("50000.0"), is_verified=True),
+            "verified_sender": User("verified_sender", "Ver Sender", "1234", Decimal("50000.0"), is_verified=True, risk_tier="high"),
             "unverified_sender": User("unverified_sender", "Unver Sender", "1234", Decimal("50000.0"), is_verified=False),
             "receiver": User("receiver", "Receiver", "1234", Decimal("100.0"), is_verified=True),
         }
