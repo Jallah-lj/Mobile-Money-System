@@ -1,37 +1,39 @@
-import json
+import os
 import sys
+import sqlite3
+
+DB_PATH = os.path.join("mobile_money_system", "mobile_money.db")
 
 def set_admin(phone):
-    db_file = "users.json"
-    
-    # Try looking in 'mobile_money_system' if not in root
+    # Search for the database file in the current directory or mobile_money_system/
+    db_file = DB_PATH if os.path.exists(DB_PATH) else "mobile_money.db"
+
     if not os.path.exists(db_file):
-        db_file = os.path.join("mobile_money_system", "users.json")
-    
-    if not os.path.exists(db_file):
-        print(f"Error: {db_file} not found.")
+        print(f"Error: Database file not found. Run the app first to initialize the database.")
         return
 
     try:
-        with open(db_file, "r") as f:
-            users = json.load(f)
-        
-        if phone not in users:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT phone, name FROM users WHERE phone = ?", (phone,))
+        row = cursor.fetchone()
+
+        if not row:
             print(f"Error: User with phone {phone} not found.")
+            conn.close()
             return
-            
-        users[phone]["role"] = "admin"
-        
-        with open(db_file, "w") as f:
-            json.dump(users, f, indent=4)
-            
-        print(f"Success: User {users[phone]['name']} ({phone}) is now an Admin.")
-        
+
+        cursor.execute("UPDATE users SET role = 'admin' WHERE phone = ?", (phone,))
+        conn.commit()
+        conn.close()
+
+        print(f"Success: User {row[1]} ({phone}) is now an Admin.")
+
     except Exception as e:
         print(f"Error accessing database: {e}")
 
 if __name__ == "__main__":
-    import os
     if len(sys.argv) != 2:
         print("Usage: python set_admin.py <phone_number>")
     else:

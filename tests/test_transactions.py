@@ -6,51 +6,65 @@ from decimal import Decimal
 # Add parent directory to path to import modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-try:
-    from mobile_money_system.transactions import TransactionManager
-    from mobile_money_system.users import UserManager, User
-except ImportError:
-    # Fallback to local import if run from root
-    from mobile_money_system.transactions import TransactionManager
-    from mobile_money_system.users import UserManager, User
+from mobile_money_system.transactions import TransactionManager
+from mobile_money_system.models import User
+
 
 class MockUserManager:
+    """Lightweight stand-in; get_user reads balance from the test DB."""
+
     def __init__(self):
-        self.users = {
-            "sender": User("sender", "Sender", "1234", Decimal("10000.0"), is_verified=True),
-            "receiver": User("receiver", "Receiver", "1234", Decimal("100.0"), is_verified=True),
-            "rich_guy": User("rich_guy", "Rich", "1234", Decimal("100000.0"), is_verified=True)
+        self._users = {
+            "sender":   User("sender",   "Sender",   "hashed", Decimal("10000.0"), is_verified=True),
+            "receiver": User("receiver", "Receiver", "hashed", Decimal("100.0"),   is_verified=True),
         }
-    
+
     def get_user(self, phone):
-        return self.users.get(phone)
-    
+        user = self._users.get(phone)
+        if user is None:
+            return None
+        from tests.conftest import get_balance
+        user.balance = get_balance(phone)
+        return user
+
+    def update_user(self, phone, **kwargs):
+        user = self._users.get(phone)
+        if user and "balance" in kwargs:
+            user.balance = Decimal(str(kwargs["balance"]))
+        return True, "Updated"
+
     def save_users(self):
-        pass # Mock save
+        pass
+
 
 class TestTransactionLimits(unittest.TestCase):
     def setUp(self):
+        from tests.conftest import setup_test_db, insert_user
+        self._db_path, self._db_teardown = setup_test_db()
+
         self.user_manager = MockUserManager()
-        # Point to a temporary file or mock storage logic if needed
         self.tm = TransactionManager(self.user_manager)
-        self.tm.transactions = [] # Clear history
-        self.tm.save_transactions = lambda: None # Mock save
+
+        insert_user("sender",   "Sender",   balance="10000.0")
+        insert_user("receiver", "Receiver", balance="100.0")
+
+    def tearDown(self):
+        self._db_teardown()
 
     def test_fees(self):
-        # Transfer fee is 1%
-        sender_start = self.user_manager.users["sender"].balance
-        receiver_start = self.user_manager.users["receiver"].balance
+        """Transfer fee must be exactly 1% and receiver must get the full amount."""
         amount = Decimal("100")
-        
+
         success, msg = self.tm.transfer("sender", "receiver", float(amount), "Fee Test")
-        self.assertTrue(success)
-        
+        self.assertTrue(success, msg)
+
         fee = amount * Decimal("0.01")
-        
-        # Check Sender deducted amount + fee
-        self.assertEqual(self.user_manager.users["sender"].balance, sender_start - amount - fee)
-        # Check Receiver got amount
-        self.assertEqual(self.user_manager.users["receiver"].balance, receiver_start + amount)
+
+        from tests.conftest import get_balance
+        self.assertEqual(get_balance("sender"),   Decimal("10000.0") - amount - fee)
+        self.assertEqual(get_balance("receiver"), Decimal("100.0")   + amount)
+
 
 if __name__ == '__main__':
     unittest.main()
+

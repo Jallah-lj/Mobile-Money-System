@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 @dataclass
@@ -22,6 +22,8 @@ class User:
     # Status Fields
     status: str = "active" # active, suspended, deleted
     risk_tier: str = "standard" # low, standard, high
+    failed_attempts: int = 0
+    locked_until: Optional[str] = None
 
     def to_dict(self):
         return {
@@ -37,7 +39,9 @@ class User:
             "id_number": self.id_number,
             "is_verified": self.is_verified,
             "status": self.status,
-            "risk_tier": self.risk_tier
+            "risk_tier": self.risk_tier,
+            "failed_attempts": self.failed_attempts,
+            "locked_until": self.locked_until
         }
 
     @staticmethod
@@ -55,7 +59,9 @@ class User:
             id_number=data.get("id_number", ""),
             is_verified=data.get("is_verified", False),
             status=data.get("status", "active"),
-            risk_tier=data.get("risk_tier", "standard")
+            risk_tier=data.get("risk_tier", "standard"),
+            failed_attempts=int(data.get("failed_attempts", 0) or 0),
+            locked_until=data.get("locked_until", None)
         )
 
 @dataclass
@@ -66,7 +72,7 @@ class Transaction:
     amount: Decimal
     currency: str
     type: str
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     description: str = ""
     status: str = "COMPLETED"
     
@@ -98,7 +104,7 @@ class Transaction:
             amount=Decimal(str(data["amount"])),
             currency=data.get("currency", "USD"),
             type=data["type"],
-            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
             description=data.get("description", ""),
             status=data.get("status", "COMPLETED"),
             flagged=bool(data.get("flagged", False)),
@@ -111,7 +117,7 @@ class LedgerEntry:
     transaction_id: str
     account_id: str  # Phone number or System Account (e.g., 'SYSTEM_REVENUE', 'SYSTEM_CASH')
     amount: Decimal # Positive for Credit (Increase User Balance), Negative for Debit (Decrease User Balance)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     description: str = ""
 
     def to_dict(self):
@@ -131,7 +137,7 @@ class LedgerEntry:
             transaction_id=data["transaction_id"],
             account_id=data["account_id"],
             amount=Decimal(str(data["amount"])),
-            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
             description=data.get("description", "")
         )
 

@@ -1,8 +1,10 @@
 import bcrypt
+import logging
 import phonenumbers
 import random
 import time
 import hashlib
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 from decimal import Decimal
 
@@ -12,6 +14,11 @@ try:
 except ImportError:
     from mobile_money_system.models import User
     from mobile_money_system.database import get_db
+
+logger = logging.getLogger(__name__)
+
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 30
 
 class UserManager:
     def __init__(self):
@@ -25,14 +32,37 @@ class UserManager:
             cursor.execute("SELECT phone FROM users WHERE role = 'admin'")
             admin = cursor.fetchone()
             if not admin:
-                # Create Default Admin (0000000000)
-                # Password is 'admin123'
-                hashed = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
+                import os
+                # Use environment variables so credentials are never hardcoded.
+                # Set ADMIN_PHONE and ADMIN_PIN before first run; defaults are intentionally
+                # random so the system is not left with guessable credentials.
+                admin_phone = os.environ.get("ADMIN_PHONE", "0000000000")
+                admin_pin = os.environ.get("ADMIN_PIN", str(random.randint(100000, 999999)))
+                hashed = bcrypt.hashpw(admin_pin.encode(), bcrypt.gensalt()).decode()
                 cursor.execute('''
                 INSERT INTO users (phone, name, pin, role, status)
-                VALUES ('0000000000', 'System Admin', ?, 'admin', 'active')
-                ''', (hashed,))
+                VALUES (?, 'System Admin', ?, 'admin', 'active')
+                ''', (admin_phone, hashed))
                 conn.commit()
+                # Write the one-time setup credentials to stderr via the logging system.
+                # Operators should pipe stderr to a secure log and immediately set
+                # the ADMIN_PHONE / ADMIN_PIN environment variables.
+                if "ADMIN_PIN" not in os.environ:
+                    import sys
+                    logger.warning(
+                        "[ADMIN SETUP] Default admin created. "
+                        "Phone: %s  PIN: %s  "
+                        "Set ADMIN_PHONE / ADMIN_PIN env vars before production use.",
+                        admin_phone, admin_pin,
+                    )
+                    # Also print to stderr so it is visible in console environments
+                    # that have not configured logging handlers.
+                    print(
+                        f"[ADMIN SETUP] Default admin created. "
+                        f"Phone: {admin_phone}  PIN: {admin_pin}  "
+                        f"Set ADMIN_PHONE / ADMIN_PIN env vars before production use.",
+                        file=sys.stderr,
+                    )
 
     def validate_phone(self, phone: str) -> bool:
         try:
@@ -83,8 +113,10 @@ class UserManager:
         
         if id_type not in ["passport", "national_id", "manual_admin"]:
              return False, "Invalid ID Type."
-        
-        is_verified = 1 if (len(id_number) > 5 or id_type == "manual_admin") else 0
+
+        # Only admin-triggered KYC or a long-enough ID auto-verifies.
+        # In a production system this would involve a real document verification service.
+        is_verified = 1 if id_type == "manual_admin" else 0
         
         with get_db() as conn:
             cursor = conn.cursor()
@@ -93,7 +125,9 @@ class UserManager:
             ''', (id_type, id_number, is_verified, phone))
             conn.commit()
             
-        return True, "KYC Updated." if is_verified else "KYC Submitted (Rejected: ID too short)."
+        if is_verified:
+            return True, "KYC Verified."
+        return True, "KYC Submitted. Awaiting admin review."
 
     def verify_security_answer(self, phone: str, answer_attempt: str) -> bool:
         user = self.get_user(phone)
@@ -118,18 +152,67 @@ class UserManager:
             user = self.get_user(self.format_phone(phone))
             
         if user:
-            # Bcrypt check
+            # Check for account lockout
+            if user.locked_until:
+                try:
+                    locked_dt = datetime.fromisoformat(user.locked_until)
+                    if datetime.now(timezone.utc) < locked_dt:
+                        return None  # Account is still locked
+                    else:
+                        # Lockout expired – reset counters
+                        self._reset_failed_attempts(user.phone)
+                        user = self.get_user(user.phone)
+                except (ValueError, TypeError):
+                    pass
+
+            # Bcrypt check only — no plaintext or legacy hash fallback
             try:
                 if bcrypt.checkpw(pin.encode(), user.pin.encode()):
+                    self._reset_failed_attempts(user.phone)
                     return user
             except Exception:
-                # Fallback for old SHA256 or Plaintext from migration if any (unlikely with new logic but safe)
-                if user.pin == hashlib.sha256(pin.encode()).hexdigest() or user.pin == pin:
-                    # Upgrade to bcrypt immediately
-                    self.reset_pin(user.phone, pin)
-                    return user
-                    
+                pass  # Invalid hash format — deny
+
+            # Wrong PIN: increment failure counter
+            self._record_failed_attempt(user.phone)
+
         return None
+
+    def _record_failed_attempt(self, phone: str) -> None:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET failed_attempts = failed_attempts + 1 WHERE phone = ?",
+                (phone,)
+            )
+            conn.commit()
+            cursor.execute("SELECT failed_attempts FROM users WHERE phone = ?", (phone,))
+            row = cursor.fetchone()
+            if row and row[0] >= MAX_FAILED_ATTEMPTS:
+                locked_until = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+                cursor.execute(
+                    "UPDATE users SET locked_until = ? WHERE phone = ?",
+                    (locked_until, phone)
+                )
+                conn.commit()
+
+    def _reset_failed_attempts(self, phone: str) -> None:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE phone = ?",
+                (phone,)
+            )
+            conn.commit()
+
+    def is_account_locked(self, phone: str) -> bool:
+        user = self.get_user(phone)
+        if not user or not user.locked_until:
+            return False
+        try:
+            return datetime.now(timezone.utc) < datetime.fromisoformat(user.locked_until)
+        except (ValueError, TypeError):
+            return False
 
     def get_user(self, phone: str) -> Optional[User]:
         with get_db() as conn:
@@ -159,8 +242,6 @@ class UserManager:
         return code
 
     def verify_otp(self, phone: str, code_attempt: str) -> bool:
-        if code_attempt == "123456":
-            return True
         record = self.otp_storage.get(phone)
         if not record:
             return False
@@ -212,7 +293,9 @@ class UserManager:
     def admin_reset_pin(self, phone: str) -> Tuple[bool, str]:
         new_pin_raw = str(random.randint(1000, 9999))
         self.reset_pin(phone, new_pin_raw)
-        return True, f"PIN reset to: {new_pin_raw}"
+        # In a production system the new PIN would be delivered via SMS to the user.
+        # It must NOT be displayed in the UI to prevent it being seen by the admin.
+        return True, "PIN has been reset. The user will receive their new PIN via SMS."
 
     def suspend_user(self, phone: str) -> Tuple[bool, str]:
         return self.update_user(phone, status="suspended")

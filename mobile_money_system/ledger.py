@@ -2,7 +2,7 @@ import uuid
 import time
 from decimal import Decimal
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from models import LedgerEntry
@@ -51,7 +51,7 @@ class LedgerManager:
             transaction_id=transaction_id,
             account_id=account_id,
             amount=amount,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             description=description
         )
 
