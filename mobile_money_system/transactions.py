@@ -1,17 +1,17 @@
 import time
 import uuid
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional
 from decimal import Decimal
 
 try:
-    from models import Transaction
+    from models import Transaction, LedgerEntry
     from database import get_db
     from users import UserManager
     from ledger import LedgerManager
 except ImportError:
-    from mobile_money_system.models import Transaction
+    from mobile_money_system.models import Transaction, LedgerEntry
     from mobile_money_system.database import get_db
     from mobile_money_system.users import UserManager
     from mobile_money_system.ledger import LedgerManager
@@ -20,37 +20,70 @@ class TransactionManager:
     def __init__(self, user_manager: UserManager, db_file: str = "transactions.json", ledger_file: str = "ledger.json"):
         self.user_manager = user_manager
         self.ledger = LedgerManager()
-        
-        # Configuration Limits (None currently active)
 
-    def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
-        # Generate a standard reference number (e.g., TXN-12345678-ABCD)
+    # ------------------------------------------------------------------
+    # Low-level helpers that accept an existing connection for atomicity
+    # ------------------------------------------------------------------
+
+    def _build_transaction(self, sender: str, receiver: str, amount: Decimal, t_type: str,
+                           description: str = "", currency: str = "USD",
+                           flagged: bool = False, flag_reason: str = "",
+                           status: str = "COMPLETED") -> Transaction:
+        """Create a Transaction object without writing to the database."""
         timestamp_part = int(time.time())
         random_part = str(uuid.uuid4())[:8].upper()
         t_id = f"TXN-{timestamp_part}-{random_part}"
-        
-        t = Transaction(
-            id=t_id, 
-            sender_phone=sender, 
-            receiver_phone=receiver, 
-            amount=amount, 
+        return Transaction(
+            id=t_id,
+            sender_phone=sender,
+            receiver_phone=receiver,
+            amount=amount,
             currency=currency,
-            type=t_type, 
+            type=t_type,
             description=description,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             status=status,
             flagged=flagged,
             flag_reason=flag_reason
         )
-        
+
+    def _insert_txn(self, conn, txn: Transaction) -> None:
+        """Insert a Transaction into the database using the provided connection."""
+        conn.execute('''
+        INSERT INTO transactions (id, sender_phone, receiver_phone, amount, currency, type,
+                                  timestamp, description, status, flagged, flag_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (txn.id, txn.sender_phone, txn.receiver_phone, str(txn.amount), txn.currency,
+              txn.type, txn.timestamp, txn.description, txn.status,
+              1 if txn.flagged else 0, txn.flag_reason))
+
+    def _insert_ledger_entries(self, conn, entries: List[LedgerEntry]) -> None:
+        """Validate and insert ledger entries using the provided connection.
+        Raises ValueError if the entries do not balance to zero."""
+        total = sum((e.amount for e in entries), Decimal("0.0"))
+        if total != Decimal("0.0"):
+            raise ValueError(f"Unbalanced ledger entries. Sum: {total}")
+        for e in entries:
+            conn.execute('''
+            INSERT INTO ledger (id, transaction_id, account_id, amount, timestamp, description)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (e.id, e.transaction_id, e.account_id, str(e.amount), e.timestamp, e.description))
+
+    def _set_balance(self, conn, phone: str, balance: Decimal) -> None:
+        """Update a user's balance using the provided connection."""
+        conn.execute("UPDATE users SET balance = ? WHERE phone = ?", (str(balance), phone))
+
+    # ------------------------------------------------------------------
+    # Legacy helper used by non-financial admin operations
+    # ------------------------------------------------------------------
+
+    def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
+        # Generate a standard reference number (e.g., TXN-12345678-ABCD)
+        t = self._build_transaction(sender, receiver, amount, t_type, description,
+                                    currency, flagged, flag_reason, status)
         with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-            INSERT INTO transactions (id, sender_phone, receiver_phone, amount, currency, type, timestamp, description, status, flagged, flag_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (t.id, t.sender_phone, t.receiver_phone, str(t.amount), t.currency, t.type, t.timestamp, t.description, t.status, 1 if t.flagged else 0, t.flag_reason))
+            self._insert_txn(conn, t)
             conn.commit()
-            
         return t
 
     def get_transaction(self, t_id: str) -> Optional[Transaction]:
@@ -176,7 +209,7 @@ class TransactionManager:
             reason.append("Large amount (>10k)")
             
         # 2. Velocity Check (Rapid Movement)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         time_window = (now - timedelta(minutes=5)).isoformat()
         
         with get_db() as conn:
@@ -206,29 +239,32 @@ class TransactionManager:
         # AML Check
         flagged, flag_reason = self._assess_aml(phone, amount_decimal)
 
-        # 1. Create Transaction ID
-        txn = self._create_transaction_record(
-            sender="SYSTEM", 
-            receiver=phone, 
-            amount=amount_decimal, 
-            t_type="DEPOSIT", 
+        # Build objects before opening the DB connection
+        txn = self._build_transaction(
+            sender="SYSTEM",
+            receiver=phone,
+            amount=amount_decimal,
+            t_type="DEPOSIT",
             description=description,
             currency=user.currency,
             flagged=flagged,
             flag_reason=flag_reason
         )
-
         entries = [
-            self.ledger.create_entry(txn.id, "SYSTEM_CASH", -amount_decimal, "Cash In"), # Debit Cash (Asset) - Wait, if we treat + as User Balance Increase (Liability), then Asset Increase should be ... ?
+            self.ledger.create_entry(txn.id, "SYSTEM_CASH", -amount_decimal, "Cash In"),
             self.ledger.create_entry(txn.id, phone, amount_decimal, "Deposit to Wallet")
         ]
-        
-        if self.ledger.post_entries(entries):
-            user.balance += amount_decimal
-            self.user_manager.update_user(phone, balance=user.balance)
+
+        # Single atomic transaction
+        try:
+            with get_db() as conn:
+                self._insert_txn(conn, txn)
+                self._insert_ledger_entries(conn, entries)
+                self._set_balance(conn, phone, user.balance + amount_decimal)
+                conn.commit()
             return True, f"Deposited {amount_decimal} successfully."
-        else:
-            return False, "Transaction failed: Ledger imbalance."
+        except Exception as e:
+            return False, f"Transaction failed: {e}"
 
     def withdraw(self, phone: str, amount: float, description: str = "Withdrawal") -> Tuple[bool, str]:
         amount_decimal = Decimal(str(amount))
@@ -246,34 +282,31 @@ class TransactionManager:
         total_deduction = amount_decimal + fee
 
         if user.balance < total_deduction:
-            return False, f"Insufficient balance."
+            return False, "Insufficient balance."
         
         # AML Check
         flagged, flag_reason = self._assess_aml(phone, amount_decimal)
 
-        # 1. Main Withdrawal
-        txn_wd = self._create_transaction_record(
-            sender=phone, 
-            receiver="SYSTEM", 
-            amount=amount_decimal, 
-            t_type="WITHDRAWAL", 
+        # Build objects before opening DB
+        txn_wd = self._build_transaction(
+            sender=phone,
+            receiver="SYSTEM",
+            amount=amount_decimal,
+            t_type="WITHDRAWAL",
             description=description,
             currency=user.currency,
             flagged=flagged,
             flag_reason=flag_reason
         )
-        
         entries_wd = [
             self.ledger.create_entry(txn_wd.id, phone, -amount_decimal, "Withdrawal from Wallet"),
             self.ledger.create_entry(txn_wd.id, "SYSTEM_CASH", amount_decimal, "Cash Out")
         ]
-
-        # 2. Fee
-        txn_fee = self._create_transaction_record(
-            sender=phone, 
-            receiver="SYSTEM_REVENUE", 
-            amount=fee, 
-            t_type="FEE", 
+        txn_fee = self._build_transaction(
+            sender=phone,
+            receiver="SYSTEM_REVENUE",
+            amount=fee,
+            t_type="FEE",
             description=f"Fee: {description}",
             currency=user.currency
         )
@@ -281,13 +314,18 @@ class TransactionManager:
             self.ledger.create_entry(txn_fee.id, phone, -fee, "Withdrawal Fee"),
             self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
         ]
-        
-        if self.ledger.post_entries(entries_wd) and self.ledger.post_entries(entries_fee):
-            user.balance -= total_deduction
-            self.user_manager.update_user(phone, balance=user.balance)
+
+        try:
+            with get_db() as conn:
+                self._insert_txn(conn, txn_wd)
+                self._insert_txn(conn, txn_fee)
+                self._insert_ledger_entries(conn, entries_wd)
+                self._insert_ledger_entries(conn, entries_fee)
+                self._set_balance(conn, phone, user.balance - total_deduction)
+                conn.commit()
             return True, f"Withdrawn ${amount_decimal}."
-        else:
-            return False, "Transaction failed."
+        except Exception as e:
+            return False, f"Transaction failed: {e}"
 
     def transfer(self, sender_phone: str, receiver_phone: str, amount: float, description: str = "Transfer") -> Tuple[bool, str]:
         sender = self.user_manager.get_user(sender_phone)
@@ -305,7 +343,7 @@ class TransactionManager:
         
         # Currency check
         if sender.currency != receiver.currency:
-            return False, f"Currency mismatch."
+            return False, "Currency mismatch."
 
         allowed, msg = self._check_limits(sender_phone, amount_decimal)
         if not allowed:
@@ -315,17 +353,17 @@ class TransactionManager:
         total_deduction = amount_decimal + fee
 
         if sender.balance < total_deduction:
-            return False, f"Insufficient balance."
+            return False, "Insufficient balance."
 
         # AML Check
         flagged, flag_reason = self._assess_aml(sender_phone, amount_decimal)
 
-        # 1. Transfer
-        txn_tr = self._create_transaction_record(
-            sender=sender_phone, 
-            receiver=receiver_phone, 
-            amount=amount_decimal, 
-            t_type="TRANSFER", 
+        # Build objects before opening DB
+        txn_tr = self._build_transaction(
+            sender=sender_phone,
+            receiver=receiver_phone,
+            amount=amount_decimal,
+            t_type="TRANSFER",
             description=description,
             currency=sender.currency,
             flagged=flagged,
@@ -335,14 +373,12 @@ class TransactionManager:
             self.ledger.create_entry(txn_tr.id, sender_phone, -amount_decimal, "Transfer Out"),
             self.ledger.create_entry(txn_tr.id, receiver_phone, amount_decimal, "Transfer In")
         ]
-
-        # 2. Fee
-        txn_fee = self._create_transaction_record(
-            sender_phone, 
-            "SYSTEM_REVENUE", 
-            fee, 
-            "FEE", 
-            f"Fee for Transfer",
+        txn_fee = self._build_transaction(
+            sender_phone,
+            "SYSTEM_REVENUE",
+            fee,
+            "FEE",
+            "Fee for Transfer",
             currency=sender.currency
         )
         entries_fee = [
@@ -350,14 +386,18 @@ class TransactionManager:
             self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
         ]
 
-        if self.ledger.post_entries(entries_tr) and self.ledger.post_entries(entries_fee):
-            sender.balance -= total_deduction
-            receiver.balance += amount_decimal
-            self.user_manager.update_user(sender_phone, balance=sender.balance)
-            self.user_manager.update_user(receiver_phone, balance=receiver.balance)
+        try:
+            with get_db() as conn:
+                self._insert_txn(conn, txn_tr)
+                self._insert_txn(conn, txn_fee)
+                self._insert_ledger_entries(conn, entries_tr)
+                self._insert_ledger_entries(conn, entries_fee)
+                self._set_balance(conn, sender_phone, sender.balance - total_deduction)
+                self._set_balance(conn, receiver_phone, receiver.balance + amount_decimal)
+                conn.commit()
             return True, "Transfer successful"
-        else:
-            return False, "Transaction failed"
+        except Exception as e:
+            return False, f"Transaction failed: {e}"
 
     def pay_bill(self, phone: str, amount: float, biller_name: str, biller_id: str, description: str = "Bill Payment") -> Tuple[bool, str]:
         user = self.user_manager.get_user(phone)
@@ -375,18 +415,18 @@ class TransactionManager:
         total_deduction = amount_decimal + fee
         
         if user.balance < total_deduction:
-             return False, f"Insufficient balance."
+             return False, "Insufficient balance."
              
         # AML Check
         flagged, flag_reason = self._assess_aml(phone, amount_decimal)
 
-        # 1. Bill Payment
+        # Build objects before opening DB
         full_desc = f"{biller_name} ({biller_id}) - {description}"
-        txn_bill = self._create_transaction_record(
-            phone, 
-            "BILLER_SYSTEM", 
-            amount_decimal, 
-            "BILL_PAYMENT", 
+        txn_bill = self._build_transaction(
+            phone,
+            "BILLER_SYSTEM",
+            amount_decimal,
+            "BILL_PAYMENT",
             full_desc,
             currency=user.currency,
             flagged=flagged,
@@ -396,13 +436,11 @@ class TransactionManager:
             self.ledger.create_entry(txn_bill.id, phone, -amount_decimal, "Bill Payment"),
             self.ledger.create_entry(txn_bill.id, "BILLER_SYSTEM", amount_decimal, "Bill Payment Received")
         ]
-        
-        # 2. Fee
-        txn_fee = self._create_transaction_record(
-            phone, 
-            "SYSTEM_REVENUE", 
-            fee, 
-            "FEE", 
+        txn_fee = self._build_transaction(
+            phone,
+            "SYSTEM_REVENUE",
+            fee,
+            "FEE",
             f"Fee: {biller_name}",
             currency=user.currency
         )
@@ -410,13 +448,19 @@ class TransactionManager:
             self.ledger.create_entry(txn_fee.id, phone, -fee, "Bill Fee"),
             self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
         ]
-        
-        if self.ledger.post_entries(entries_bill) and self.ledger.post_entries(entries_fee):
-            user.balance -= total_deduction
-            self.user_manager.update_user(phone, balance=user.balance)
+
+        try:
+            with get_db() as conn:
+                self._insert_txn(conn, txn_bill)
+                self._insert_txn(conn, txn_fee)
+                self._insert_ledger_entries(conn, entries_bill)
+                self._insert_ledger_entries(conn, entries_fee)
+                self._set_balance(conn, phone, user.balance - total_deduction)
+                conn.commit()
             return True, f"Paid {biller_name} successfully."
-        else:
-            return False, "Transaction Failed"
+        except Exception as e:
+            return False, f"Transaction failed: {e}"
+
 
     def request_money(self, requester_phone: str, payer_phone: str, amount: float, description: str = "Money Request") -> Tuple[bool, str]:
         # Just create a record with PENDING status. No money moves yet.

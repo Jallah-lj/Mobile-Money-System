@@ -345,8 +345,10 @@ else:
         if st.session_state.get('impersonating', False):
              st.sidebar.warning("⚠️ Impersonation Active")
              if st.sidebar.button("Exit Impersonation", type="primary", width="stretch"):
-                 del st.session_state.user
+                 st.session_state.current_user_phone = st.session_state.get('admin_phone')
                  del st.session_state.impersonating
+                 if 'admin_phone' in st.session_state:
+                     del st.session_state.admin_phone
                  st.rerun()
 
         if st.sidebar.button(TR("logout"), key="admin_logout", width="stretch"):
@@ -435,7 +437,10 @@ else:
                         st.markdown("**Security**")
                         if st.button("Reset PIN", width="stretch", key="btn_pin"):
                              success, msg = user_manager.admin_reset_pin(target_u.phone)
-                             st.info(msg)
+                             if success:
+                                 st.success(msg)
+                             else:
+                                 st.error(msg)
                         
                         risk_tier = st.selectbox("Risk Tier", ["low", "standard", "high"], index=["low", "standard", "high"].index(target_u.risk_tier))
                         if risk_tier != target_u.risk_tier:
@@ -448,12 +453,22 @@ else:
                     with col_act3:
                          st.markdown("**Support**")
                          if st.button("Impersonate User", width="stretch", key="btn_imp"):
-                             st.session_state.user = target_u
+                             st.session_state.admin_phone = st.session_state.current_user_phone
+                             st.session_state.current_user_phone = target_u.phone
                              st.session_state.impersonating = True
                              st.rerun()
                              
                          if st.button("HARD DELETE", type="primary", width="stretch"):
-                             st.error("Feature valid but dangerous. Simulated delete.")
+                             if target_u.role == "admin":
+                                 st.error("Cannot delete an admin account.")
+                             else:
+                                 success, msg = user_manager.delete_user(target_u.phone)
+                                 if success:
+                                     st.success(f"User {target_u.phone} permanently deleted.")
+                                     time.sleep(1)
+                                     st.rerun()
+                                 else:
+                                     st.error(msg)
 
         # ---------------- TRANSACTIONS TAB ----------------
         elif selected_adm == "Transactions":
@@ -597,12 +612,10 @@ else:
         if st.session_state.get('impersonating', False):
             st.error("⚠️ IMPERSONATING USER")
             if st.button("EXIT IMPERSONATION", type="primary", width="stretch"):
-                # We need to restore the admin session. 
-                # Ideally we stored the admin user in session state too, but simply clearing 'user' forces login.
-                # Retaining the login would require storing 'admin_user' separately.
-                # For this prototype, forcing re-login is safer/easier.
-                del st.session_state.user
+                st.session_state.current_user_phone = st.session_state.get('admin_phone')
                 del st.session_state.impersonating
+                if 'admin_phone' in st.session_state:
+                    del st.session_state.admin_phone
                 st.rerun()
             st.markdown("---")
 

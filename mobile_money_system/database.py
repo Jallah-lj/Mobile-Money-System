@@ -8,6 +8,7 @@ DB_PATH = "mobile_money.db"
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
     finally:
@@ -32,9 +33,18 @@ def init_db():
             id_number TEXT,
             is_verified INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
-            risk_tier TEXT DEFAULT 'standard'
+            risk_tier TEXT DEFAULT 'standard',
+            failed_attempts INTEGER DEFAULT 0,
+            locked_until TEXT DEFAULT NULL
         )
         ''')
+
+        # Migration: add columns if they do not exist in an older database
+        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(users)")}
+        if "failed_attempts" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN failed_attempts INTEGER DEFAULT 0")
+        if "locked_until" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN locked_until TEXT DEFAULT NULL")
         
         # Transactions Table
         cursor.execute('''
