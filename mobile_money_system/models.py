@@ -66,7 +66,7 @@ class Transaction:
     amount: Decimal
     currency: str
     type: str
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     description: str = ""
     status: str = "COMPLETED"
     
@@ -98,10 +98,10 @@ class Transaction:
             amount=Decimal(str(data["amount"])),
             currency=data.get("currency", "USD"),
             type=data["type"],
-            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
             description=data.get("description", ""),
             status=data.get("status", "COMPLETED"),
-            flagged=data.get("flagged", False),
+            flagged=bool(data.get("flagged", False)),
             flag_reason=data.get("flag_reason", "")
         )
 
@@ -111,7 +111,7 @@ class LedgerEntry:
     transaction_id: str
     account_id: str  # Phone number or System Account (e.g., 'SYSTEM_REVENUE', 'SYSTEM_CASH')
     amount: Decimal # Positive for Credit (Increase User Balance), Negative for Debit (Decrease User Balance)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     description: str = ""
 
     def to_dict(self):
@@ -131,6 +131,7 @@ class LedgerEntry:
             transaction_id=data["transaction_id"],
             account_id=data["account_id"],
             amount=Decimal(str(data["amount"])),
-            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
             description=data.get("description", "")
         )
+

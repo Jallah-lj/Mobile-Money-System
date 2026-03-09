@@ -8,7 +8,8 @@ import time
 import re
 
 def validate_phone(phone):
-    return re.match(r'^\d{10,15}$', phone)
+    # Allow optional '+', and 7-15 digits for global compatibility
+    return re.match(r'^\+?[\d\s\-]{7,15}$', phone)
 
 # --- Configuration & Styles ---
 st.set_page_config(
@@ -321,7 +322,7 @@ if not current_user:
                 reg_submitted = st.form_submit_button(TR("register"))
                 if reg_submitted:
                     if not validate_phone(new_phone):
-                        st.error("Invalid Phone Number (Use 10-15 digits only)")
+                        st.error("Invalid Phone Number (Use international format e.g., +234...)")
                     elif new_name and new_phone and len(new_pin) == 4 and new_pin.isdigit() and sec_a:
                         success, msg = user_manager.register(new_phone, new_name, new_pin, sec_q, sec_a, currency)
                         if success:

@@ -13,5 +13,20 @@
         "is_verified": false,
         "status": "active",
         "risk_tier": "standard"
+    },
+    "0792954969": {
+        "phone": "0792954969",
+        "name": "Jallah Lawuobah",
+        "pin": "6f6a4e56098cfd9af29e3ae549503b370211a4e94421457fe4cfd39a38a1fa08",
+        "balance": "0.0",
+        "currency": "USD",
+        "role": "user",
+        "sec_q": "Which city were you born in?",
+        "sec_a": "1a8ee6c730a37af2a823f05aad475c4fa22c14461798bc51f9763b51a917d137",
+        "id_type": "",
+        "id_number": "",
+        "is_verified": false,
+        "status": "active",
+        "risk_tier": "standard"
     }
 }

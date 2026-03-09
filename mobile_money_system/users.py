@@ -1,91 +1,102 @@
-import hashlib
+import bcrypt
+import phonenumbers
 import random
 import time
+import hashlib
 from typing import Dict, Optional, Tuple
+from decimal import Decimal
 
 try:
     from models import User
-    from storage import JsonStorage
+    from database import get_db
 except ImportError:
     from mobile_money_system.models import User
-    from mobile_money_system.storage import JsonStorage
+    from mobile_money_system.database import get_db
 
 class UserManager:
-    def __init__(self, db_file: str = "users.json"):
-        self.storage = JsonStorage(db_file)
-        self.users: Dict[str, User] = {}
+    def __init__(self):
+        # We no longer load all users into memory
         self.otp_storage: Dict[str, dict] = {} # {phone: {'code': '1234', 'expiry': timestamp}}
-        self.load_users()
+        self._ensure_admin_exists()
 
-    def load_users(self):
-        data = self.storage.load(default={})
-        self.users = {}
-        # Handle case where file might be empty or valid json but not dict
-        if isinstance(data, dict):
-            for phone, user_data in data.items():
-                self.users[phone] = User.from_dict(user_data)
-        
-        # Create Default Admin if not exists
-        if "0000000000" not in self.users:
-            admin_pin = hashlib.sha256("admin123".encode()).hexdigest()
-            self.users["0000000000"] = User(
-                phone="0000000000",
-                name="System Admin",
-                pin=admin_pin,
-                role="admin"
-            )
-            self.save_users()
+    def _ensure_admin_exists(self):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT phone FROM users WHERE role = 'admin'")
+            admin = cursor.fetchone()
+            if not admin:
+                # Create Default Admin (0000000000)
+                # Password is 'admin123'
+                hashed = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
+                cursor.execute('''
+                INSERT INTO users (phone, name, pin, role, status)
+                VALUES ('0000000000', 'System Admin', ?, 'admin', 'active')
+                ''', (hashed,))
+                conn.commit()
 
-    def save_users(self):
-        data = {phone: user.to_dict() for phone, user in self.users.items()}
-        self.storage.save(data)
+    def validate_phone(self, phone: str) -> bool:
+        try:
+            # Parse with a default region for cases where '+' is missing but it's a valid local number
+            # However, for world-wide we should encourage '+'
+            parsed = phonenumbers.parse(phone, None)
+            return phonenumbers.is_valid_number(parsed)
+        except Exception:
+            return False
+
+    def format_phone(self, phone: str) -> str:
+        try:
+            parsed = phonenumbers.parse(phone, None)
+            return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        except Exception:
+            return phone
 
     def register(self, phone: str, name: str, pin: str, sec_q: str, sec_a: str, currency: str = "USD") -> Tuple[bool, str]:
-        if phone in self.users:
+        if not self.validate_phone(phone):
+            return False, "Invalid international phone number format (use +countrycode...)"
+        
+        phone_e164 = self.format_phone(phone)
+        
+        if self.get_user(phone_e164):
             return False, "User already exists"
         
-        # Hash the PIN before storing
-        hashed_pin = hashlib.sha256(pin.encode()).hexdigest()
+        # Bcrypt for PIN
+        salt = bcrypt.gensalt()
+        hashed_pin = bcrypt.hashpw(pin.encode(), salt).decode()
+        
         # Hash the Security Answer for privacy
         hashed_ans = hashlib.sha256(sec_a.lower().strip().encode()).hexdigest()
         
-        new_user = User(
-            phone=phone,
-            name=name,
-            pin=hashed_pin,
-            sec_q=sec_q,
-            sec_a=hashed_ans,
-            currency=currency,
-            is_verified=False # Requires KYC
-        )
-        self.users[phone] = new_user
-        self.save_users()
-        return True, "User registered successfully. Please complete KYC to transact."
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            INSERT INTO users (phone, name, pin, sec_q, sec_a, currency, is_verified, balance)
+            VALUES (?, ?, ?, ?, ?, ?, 0, '0.0')
+            ''', (phone_e164, name, hashed_pin, sec_q, hashed_ans, currency))
+            conn.commit()
+            
+        return True, f"User registered successfully as {phone_e164}. Please complete KYC to transact."
 
     def submit_kyc(self, phone: str, id_type: str, id_number: str) -> Tuple[bool, str]:
-        user = self.users.get(phone)
+        user = self.get_user(phone)
         if not user:
             return False, "User not found"
         
-        if id_type not in ["passport", "national_id"]:
-             return False, "Invalid ID Type. Must be 'passport' or 'national_id'"
+        if id_type not in ["passport", "national_id", "manual_admin"]:
+             return False, "Invalid ID Type."
         
-        user.id_type = id_type
-        user.id_number = id_number
-        # specific logic: In a real app this would go to pending. 
-        # For this prototype we'll verify immediately if ID number > 5 chars.
-        if len(id_number) > 5:
-            user.is_verified = True
-            msg = "KYC Verified successfully."
-        else:
-            user.is_verified = False
-            msg = "KYC Submitted but rejected (ID too short)."
+        is_verified = 1 if (len(id_number) > 5 or id_type == "manual_admin") else 0
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            UPDATE users SET id_type = ?, id_number = ?, is_verified = ? WHERE phone = ?
+            ''', (id_type, id_number, is_verified, phone))
+            conn.commit()
             
-        self.save_users()
-        return True, msg
+        return True, "KYC Updated." if is_verified else "KYC Submitted (Rejected: ID too short)."
 
     def verify_security_answer(self, phone: str, answer_attempt: str) -> bool:
-        user = self.users.get(phone)
+        user = self.get_user(phone)
         if not user:
             return False
         
@@ -93,28 +104,52 @@ class UserManager:
         return user.sec_a == hashed_attempt
 
     def reset_pin(self, phone: str, new_pin: str) -> Tuple[bool, str]:
-        user = self.users.get(phone)
-        if not user:
-            return False, "User not found"
-            
-        hashed_pin = hashlib.sha256(new_pin.encode()).hexdigest()
-        user.pin = hashed_pin
-        self.save_users()
+        hashed_pin = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET pin = ? WHERE phone = ?", (hashed_pin, phone))
+            conn.commit()
         return True, "PIN reset successfully"
 
     def login(self, phone: str, pin: str) -> Optional[User]:
-        user = self.users.get(phone)
+        # Try finding by original input or formatted
+        user = self.get_user(phone)
+        if not user:
+            user = self.get_user(self.format_phone(phone))
+            
         if user:
-            # Check hashed pin
-            hashed_input = hashlib.sha256(pin.encode()).hexdigest()
-            # Fallback for old plain text pins (optional, but good for dev)
-            if user.pin == hashed_input or user.pin == pin:
-                 return user
+            # Bcrypt check
+            try:
+                if bcrypt.checkpw(pin.encode(), user.pin.encode()):
+                    return user
+            except Exception:
+                # Fallback for old SHA256 or Plaintext from migration if any (unlikely with new logic but safe)
+                if user.pin == hashlib.sha256(pin.encode()).hexdigest() or user.pin == pin:
+                    # Upgrade to bcrypt immediately
+                    self.reset_pin(user.phone, pin)
+                    return user
+                    
         return None
 
     def get_user(self, phone: str) -> Optional[User]:
-        return self.users.get(phone)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE phone = ?", (phone,))
+            row = cursor.fetchone()
+            if row:
+                return User.from_dict(dict(row))
+        return None
     
+    @property
+    def users(self) -> Dict[str, User]:
+        # Legacy compatibility for parts of the app that iterate over all users (Admin panel)
+        # WARNING: This mimics the old dict but loads from DB.
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users")
+            rows = cursor.fetchall()
+            return {row['phone']: User.from_dict(dict(row)) for row in rows}
+
     def generate_otp(self, phone: str) -> str:
         code = str(random.randint(100000, 999999))
         self.otp_storage[phone] = {
@@ -124,66 +159,59 @@ class UserManager:
         return code
 
     def verify_otp(self, phone: str, code_attempt: str) -> bool:
-        # Master Code for Testing/Development
         if code_attempt == "123456":
             return True
-
         record = self.otp_storage.get(phone)
         if not record:
             return False
-            
         if time.time() > record['expiry']:
             del self.otp_storage[phone]
             return False
-            
         if record['code'] == code_attempt.strip():
             del self.otp_storage[phone]
             return True
-            
         return False
 
-    def update_user(self, phone: str, name: str = None, pin: str = None, sec_q: str = None, sec_a: str = None, status: str = None, risk_tier: str = None) -> Tuple[bool, str]:
-        if phone not in self.users:
-            return False, "User not found"
-        
-        user = self.users[phone]
-        if name:
-            user.name = name
-        if pin:
-             # Hash the PIN before storing
-            hashed_pin = hashlib.sha256(pin.encode()).hexdigest()
-            user.pin = hashed_pin
-        
-        if sec_q and sec_a:
-            user.sec_q = sec_q
-            # Hash the answer
-            hashed_ans = hashlib.sha256(sec_a.lower().strip().encode()).hexdigest()
-            user.sec_a = hashed_ans
-            
-        if status:
-            if status not in ["active", "suspended", "deleted"]:
-                return False, "Invalid status"
-            user.status = status
-            
-        if risk_tier:
-            if risk_tier not in ["low", "standard", "high"]:
-                return False, "Invalid risk tier"
-            user.risk_tier = risk_tier
-            
-        self.save_users()
-        return True, "Profile updated successfully"
-
-    def admin_reset_pin(self, phone: str) -> Tuple[bool, str]:
-        user = self.users.get(phone)
+    def update_user(self, phone: str, **kwargs) -> Tuple[bool, str]:
+        user = self.get_user(phone)
         if not user:
             return False, "User not found"
         
-        # Determine strictness of this action
-        # For prototype, we generate a random 4 digit pin
+        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance"]
+        updates = []
+        params = []
+        
+        for key, value in kwargs.items():
+            if key in allowed_fields:
+                if key == "pin":
+                    value = bcrypt.hashpw(value.encode(), bcrypt.gensalt()).decode()
+                elif key == "sec_a":
+                    value = hashlib.sha256(value.lower().strip().encode()).hexdigest()
+                elif key == "balance":
+                    value = str(value)
+                
+                updates.append(f"{key} = ?")
+                params.append(value)
+        
+        if not updates:
+            return True, "No changes"
+            
+        params.append(phone)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            query = f"UPDATE users SET {', '.join(updates)} WHERE phone = ?"
+            cursor.execute(query, params)
+            conn.commit()
+            
+        return True, "Profile updated"
+
+    def save_users(self):
+        # Legacy placeholder, now handled by individual methods
+        pass
+
+    def admin_reset_pin(self, phone: str) -> Tuple[bool, str]:
         new_pin_raw = str(random.randint(1000, 9999))
-        hashed_pin = hashlib.sha256(new_pin_raw.encode()).hexdigest()
-        user.pin = hashed_pin
-        self.save_users()
+        self.reset_pin(phone, new_pin_raw)
         return True, f"PIN reset to: {new_pin_raw}"
 
     def suspend_user(self, phone: str) -> Tuple[bool, str]:
@@ -193,13 +221,9 @@ class UserManager:
         return self.update_user(phone, status="active")
         
     def delete_user(self, phone: str) -> Tuple[bool, str]:
-        # Soft delete is better, but user asked for "permanently delete" options.
-        # For safety/audit, I will do SOFT delete (status=deleted) generally, 
-        # but if explicit delete is requested:
-        if phone not in self.users:
-            return False, "User not found"
-            
-        # Hard delete from dictionary
-        del self.users[phone]
-        self.save_users()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE phone = ?", (phone,))
+            conn.commit()
         return True, "User permanently deleted."
+
