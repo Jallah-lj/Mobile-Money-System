@@ -9,7 +9,7 @@ def set_admin(phone):
     db_file = DB_PATH if os.path.exists(DB_PATH) else "mobile_money.db"
 
     if not os.path.exists(db_file):
-        print(f"Error: Database file not found. Run the app first to initialise the database.")
+        print(f"Error: Database file not found. Run the app first to initialize the database.")
         return
 
     try:

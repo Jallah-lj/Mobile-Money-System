@@ -1,4 +1,5 @@
 import bcrypt
+import logging
 import phonenumbers
 import random
 import time
@@ -13,6 +14,8 @@ try:
 except ImportError:
     from mobile_money_system.models import User
     from mobile_money_system.database import get_db
+
+logger = logging.getLogger(__name__)
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 30
@@ -41,10 +44,25 @@ class UserManager:
                 VALUES (?, 'System Admin', ?, 'admin', 'active')
                 ''', (admin_phone, hashed))
                 conn.commit()
-                # Log the generated PIN to stdout once so the operator can set it.
+                # Write the one-time setup credentials to stderr via the logging system.
+                # Operators should pipe stderr to a secure log and immediately set
+                # the ADMIN_PHONE / ADMIN_PIN environment variables.
                 if "ADMIN_PIN" not in os.environ:
-                    print(f"[ADMIN SETUP] Default admin created. Phone: {admin_phone}  PIN: {admin_pin}  "
-                          f"Set ADMIN_PHONE / ADMIN_PIN env vars before production use.")
+                    import sys
+                    logger.warning(
+                        "[ADMIN SETUP] Default admin created. "
+                        "Phone: %s  PIN: %s  "
+                        "Set ADMIN_PHONE / ADMIN_PIN env vars before production use.",
+                        admin_phone, admin_pin,
+                    )
+                    # Also print to stderr so it is visible in console environments
+                    # that have not configured logging handlers.
+                    print(
+                        f"[ADMIN SETUP] Default admin created. "
+                        f"Phone: {admin_phone}  PIN: {admin_pin}  "
+                        f"Set ADMIN_PHONE / ADMIN_PIN env vars before production use.",
+                        file=sys.stderr,
+                    )
 
     def validate_phone(self, phone: str) -> bool:
         try:

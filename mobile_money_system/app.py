@@ -231,7 +231,11 @@ if not current_user:
                                 st.session_state.temp_pin = pin # Keep temporarily
                                 st.rerun()
                             else:
-                                st.error("Invalid Phone Number or PIN")
+                                # Distinguish between locked account and wrong credentials
+                                if user_manager.is_account_locked(phone) or user_manager.is_account_locked(user_manager.format_phone(phone)):
+                                    st.error(f"Account is temporarily locked after too many failed attempts. Please try again in {30} minutes.")
+                                else:
+                                    st.error("Invalid Phone Number or PIN")
                         else:
                             st.warning("Please enter both Phone and PIN")
             

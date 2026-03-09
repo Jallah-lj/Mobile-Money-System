@@ -130,7 +130,8 @@ def setup_test_db():
 def get_test_conn() -> sqlite3.Connection:
     """Open a connection to the current test database."""
     assert _current_db_path, (
-        "No test database is active. Call setup_test_db() in setUp() first."
+        "No test database is active. Call setup_test_db() in your test's setUp() method "
+        "and the corresponding teardown_fn() in tearDown() before calling this function."
     )
     conn = sqlite3.connect(_current_db_path)
     conn.row_factory = sqlite3.Row

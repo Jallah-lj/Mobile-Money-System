@@ -62,7 +62,14 @@ class TransactionManager:
         Raises ValueError if the entries do not balance to zero."""
         total = sum((e.amount for e in entries), Decimal("0.0"))
         if total != Decimal("0.0"):
-            raise ValueError(f"Unbalanced ledger entries. Sum: {total}")
+            breakdown = ", ".join(
+                f"{e.account_id}={e.amount}" for e in entries
+            )
+            txn_id = entries[0].transaction_id if entries else "unknown"
+            raise ValueError(
+                f"Unbalanced ledger entries for transaction {txn_id}. "
+                f"Sum={total}. Breakdown: [{breakdown}]"
+            )
         for e in entries:
             conn.execute('''
             INSERT INTO ledger (id, transaction_id, account_id, amount, timestamp, description)
