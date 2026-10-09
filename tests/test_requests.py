@@ -1,72 +1,51 @@
-import unittest
-import sys
-import os
+"""Money request (request-to-pay) cycle tests."""
+
 from decimal import Decimal
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from mobile_money_system.transactions import TransactionManager
-from mobile_money_system.users import UserManager, User
+def test_request_cycle_pay(verified_user, second_verified_user):
+    alice, um, tm = verified_user
+    bob, _, _ = second_verified_user
+    tm.deposit(bob, 1000.0)
 
-class MockUserManager:
-    def __init__(self):
-        self.users = {
-            "requester": User("requester", "Alice", "1234", Decimal("100.0"), is_verified=True),
-            "payer": User("payer", "Bob", "1234", Decimal("1000.0"), is_verified=True)
-        }
+    success, msg = tm.request_money(alice, bob, 50.0, "Lunch")
+    assert success, msg
 
-    def get_user(self, phone):
-        return self.users.get(phone)
-    
-    def save_users(self):
-        pass
+    pending = [t for t in tm.get_history(alice)
+               if t.type == "REQUEST" and t.status == "PENDING"]
+    assert len(pending) == 1
+    req_id = pending[0].id
 
-class TestRequests(unittest.TestCase):
-    def setUp(self):
-        self.user_manager = MockUserManager()
-        self.tm = TransactionManager(self.user_manager)
-        self.tm.transactions = []
-        self.tm.save_transactions = lambda: None
+    alice_before = um.get_user(alice).balance
+    success, msg = tm.process_request(req_id, "PAY")
+    assert success, msg
 
-    def test_request_cycle_pay(self):
-        # Alice requests 50 from Bob
-        success, msg = self.tm.request_money("requester", "payer", 50.0, "Lunch")
-        self.assertTrue(success)
-        
-        # Verify Pending Transaction created
-        pending = [t for t in self.tm.transactions if t.type == "REQUEST" and t.status == "PENDING"]
-        self.assertEqual(len(pending), 1)
-        req_id = pending[0].id
-        
-        # Bob pays
-        success, msg = self.tm.process_request(req_id, "PAY")
-        self.assertTrue(success)
-        
-        # Check balances
-        # Payer (Bob) should lose 50 + 1% fee = 50.5
-        self.assertEqual(self.user_manager.users["payer"].balance, Decimal("1000.0") - Decimal("50.5"))
-        # Requester (Alice) should gain 50
-        self.assertEqual(self.user_manager.users["requester"].balance, Decimal("100.0") + Decimal("50.0"))
-        
-        # Check original request status
-        req_t = next(t for t in self.tm.transactions if t.id == req_id)
-        self.assertEqual(req_t.status, "COMPLETED")
+    # Bob (free tier) pays 50 + 1% fee = 50.50
+    assert um.get_user(bob).balance == Decimal("1000.0") - Decimal("50.5")
+    # Alice received exactly 50
+    assert um.get_user(alice).balance == alice_before + Decimal("50.0")
 
-    def test_request_cycle_decline(self):
-        # Alice requests 50 from Bob
-        self.tm.request_money("requester", "payer", 50.0, "Lunch")
-        req_id = self.tm.transactions[0].id
-        
-        # Bob declines
-        success, msg = self.tm.process_request(req_id, "DECLINE")
-        self.assertTrue(success)
-        
-        # Check balances unchanged
-        self.assertEqual(self.user_manager.users["payer"].balance, 1000.0)
-        
-        # Check status
-        req_t = next(t for t in self.tm.transactions if t.id == req_id)
-        self.assertEqual(req_t.status, "DECLINED")
+    assert tm.get_transaction(req_id).status == "COMPLETED"
 
-if __name__ == '__main__':
-    unittest.main()
+
+def test_request_cycle_decline(verified_user, second_verified_user):
+    alice, um, tm = verified_user
+    bob, _, _ = second_verified_user
+    tm.deposit(bob, 1000.0)
+    bob_before = um.get_user(bob).balance
+
+    tm.request_money(alice, bob, 50.0, "Lunch")
+    req_id = [t for t in tm.get_history(alice)
+              if t.type == "REQUEST" and t.status == "PENDING"][0].id
+
+    success, msg = tm.process_request(req_id, "DECLINE")
+    assert success, msg
+    assert tm.get_transaction(req_id).status == "DECLINED"
+    assert um.get_user(bob).balance == bob_before  # no money moved
+
+
+def test_request_unknown_users(managers):
+    um, tm = managers
+    success, msg = tm.request_money("+2340000000001", "+2340000000002", 10.0)
+    assert not success
+    assert "not found" in msg.lower()

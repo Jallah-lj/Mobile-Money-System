@@ -13,6 +13,15 @@ def get_db():
     finally:
         conn.close()
 
+def _table_columns(cursor, table: str):
+    cursor.execute(f"PRAGMA table_info({table})")
+    return {row["name"] for row in cursor.fetchall()}
+
+def _add_column(cursor, table: str, column: str, definition: str):
+    """Add a column to a table if it does not exist yet (idempotent migration)."""
+    if column not in _table_columns(cursor, table):
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
@@ -65,6 +74,26 @@ def init_db():
             FOREIGN KEY (transaction_id) REFERENCES transactions (id)
         )
         ''')
+
+        # Audit Log Table (append-only security trail)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            actor_phone TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT,
+            details TEXT,
+            status TEXT DEFAULT 'SUCCESS'
+        )
+        ''')
+
+        # --- Schema migrations for existing databases ---
+        # Premium membership columns (added after initial release)
+        _add_column(cursor, "users", "tier", "TEXT DEFAULT 'free'")
+        _add_column(cursor, "users", "premium_since", "TEXT DEFAULT ''")
+        _add_column(cursor, "users", "premium_expires", "TEXT DEFAULT ''")
+        _add_column(cursor, "users", "loyalty_points", "INTEGER DEFAULT 0")
         
         conn.commit()
 

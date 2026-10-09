@@ -4,8 +4,12 @@ from users import UserManager
 from transactions import TransactionManager
 from i18n import get_text
 from styles import get_custom_css
+import premium as premium_cfg
+from audit import get_audit_logs
 import time
 import re
+import csv
+from io import StringIO
 
 def validate_phone(phone):
     # Allow optional '+', and 7-15 digits for global compatibility
@@ -19,12 +23,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Apply Custom CSS
-st.markdown(get_custom_css(), unsafe_allow_html=True)
+# Apply Custom CSS (theme follows the dark-mode toggle)
+st.markdown(get_custom_css(dark=st.session_state.get("dark_mode", False)), unsafe_allow_html=True)
 
 # --- Language Setup ---
 if 'language' not in st.session_state:
     st.session_state.language = "en"
+
+# --- Appearance (dark mode) ---
+if 'dark_mode' not in st.session_state:
+    st.session_state.dark_mode = False
 
 def TR(key):
     return get_text(st.session_state.language, key)
@@ -44,106 +52,14 @@ with st.sidebar:
         st.session_state.language = "es"
     elif lang_choice == "Swahili":
         st.session_state.language = "sw"
-
-# Load FontAwesome for advanced icons
-st.markdown("""
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-<style>
-    /* Global Styles */
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
     
-    /* Card Styles */
-    .metric-card {
-        background-color: #ffffff;
-        border-left: 5px solid #4CAF50;
-        border-radius: 8px;
-        padding: 20px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        text-align: center;
-        transition: transform 0.2s;
-        margin-bottom: 10px;
-    }
-    .metric-card:hover {
-        transform: translateY(-2px);
-    }
-    .metric-title {
-        color: #757575;
-        font-size: 0.9em;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .metric-value {
-        font-size: 2em;
-        font-weight: bold;
-        color: #333;
-    }
+    st.markdown("---")
+    dark = st.toggle(TR("dark_mode"), value=st.session_state.dark_mode, key="dark_mode_toggle")
+    if dark != st.session_state.dark_mode:
+        st.session_state.dark_mode = dark
+        st.rerun()
 
-    /* Button Styles */
-    .stButton>button {
-        width: 100%;
-        border-radius: 8px;
-        height: 3em;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:active {
-        transform: scale(0.98);
-    }
-
-    /* Mobile Responsiveness */
-    @media (max-width: 768px) {
-        /* Larger touch targets for mobile */
-        .stButton>button {
-            height: 3.5em; 
-            font-size: 1rem;
-        }
-        
-        /* Adjust font sizes */
-        .metric-value {
-            font-size: 1.8em;
-        }
-        
-        /* Confirmation Card Responsive */
-        .conf-card {
-            padding: 15px !important;
-        }
-        .conf-amount {
-            font-size: 1.5em !important;
-        }
-        .conf-label {
-            font-size: 0.85em !important;
-        }
-        
-        /* Improve spacing */
-        .block-container {
-            padding-left: 1rem;
-            padding-right: 1rem;
-        }
-    }
-    
-    /* Utility Classes for Cards */
-    .conf-card {
-        background-color: white; 
-        padding: 20px; 
-        border-radius: 10px; 
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05); 
-        border: 1px solid #eee;
-    }
-    .conf-label {
-        color: gray; 
-        font-size: 0.9em; 
-        text-transform: uppercase;
-    }
-    .conf-amount {
-        font-size: 1.8em; 
-        font-weight: bold; 
-        color: #333;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Component styles live in styles.py (light & dark themes).
 
 # --- State Management ---
 if 'user_manager' not in st.session_state:
@@ -172,6 +88,15 @@ def logout_user():
         del st.session_state.otp_verified
     st.rerun()
 
+# --- Idle session timeout: auto-logout after 15 minutes without activity ---
+SESSION_TIMEOUT_SECONDS = 15 * 60
+if st.session_state.current_user_phone:
+    last_activity = st.session_state.get('last_activity', time.time())
+    if time.time() - last_activity > SESSION_TIMEOUT_SECONDS:
+        st.session_state.session_expired_notice = True
+        logout_user()
+    st.session_state.last_activity = time.time()
+
 # --- Application Layout ---
 
 st.markdown(f"""
@@ -188,6 +113,9 @@ st.markdown(f"""
 if not current_user:
     # --- Auth View ---
     st.markdown(f"<h3 style='text-align: center; margin-bottom: 2rem;'>{TR('welcome')}</h3>", unsafe_allow_html=True)
+    if st.session_state.get('session_expired_notice'):
+        st.warning(TR("session_expired"))
+        del st.session_state.session_expired_notice
     st.markdown("---")
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -355,22 +283,24 @@ else:
         st.markdown(f"## <i class='fa-solid fa-layer-group'></i> System Administration")
         
         # Admin Metrics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         total_users = len(user_manager.users)
         total_balance = sum(u.balance for u in user_manager.users.values())
         tx_count = len(transaction_manager.transactions)
         flagged_count = len([t for t in transaction_manager.transactions if t.flagged])
+        premium_count = len([u for u in user_manager.users.values() if premium_cfg.is_premium_user(u)])
         
         col1.metric("Users", total_users)
         col2.metric("Total Float", f"${total_balance:,.2f}")
         col3.metric("Transactions", tx_count)
-        col4.metric("Risk Alerts", flagged_count, delta_color="inverse")
+        col4.metric(TR("subscribers"), premium_count)
+        col5.metric("Risk Alerts", flagged_count, delta_color="inverse")
 
         # Admin Navigation
         selected_adm = option_menu(
             menu_title=None,
-            options=["Users", "Transactions", "Bills & Revenue", "Security", "Analytics", "System", "Support"],
-            icons=["people", "cash-coin", "receipt", "shield-lock", "graph-up", "gear", "headset"],
+            options=["Users", "Transactions", "Bills & Revenue", "Security", "Audit", "Analytics", "System", "Support"],
+            icons=["people", "cash-coin", "receipt", "shield-lock", "clipboard-list", "graph-up", "gear", "headset"],
             default_index=0,
             orientation="horizontal",
             styles={"nav-link": {"font-size": "14px"}}
@@ -503,7 +433,10 @@ else:
                  st.markdown("### Revenue Stream")
                  revenue_tx = [t for t in transaction_manager.transactions if t.receiver_phone == "SYSTEM_REVENUE"]
                  total_rev = sum(t.amount for t in revenue_tx)
-                 st.metric("Total Fee Revenue", f"${total_rev:,.2f}")
+                 sub_rev = sum(t.amount for t in revenue_tx if t.type == "SUBSCRIPTION")
+                 col_rev1, col_rev2 = st.columns(2)
+                 col_rev1.metric("Total Fee Revenue", f"${total_rev:,.2f}")
+                 col_rev2.metric("Subscription Revenue", f"${sub_rev:,.2f}")
                  st.bar_chart([t.amount for t in revenue_tx])
                  
             with col_b2:
@@ -539,6 +472,32 @@ else:
             st.checkbox("IP Geofencing (Allow only specific countries)", value=False)
             st.button("Update Security Rules")
 
+        # ---------------- AUDIT TAB ----------------
+        elif selected_adm == "Audit":
+            st.subheader(f"📜 {TR('audit_log')}")
+            st.caption("Append-only compliance trail of every security-relevant event.")
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                audit_action = st.text_input("Filter by Action", placeholder="e.g. LOGIN_FAILURE, TRANSFER")
+            with col_f2:
+                audit_actor = st.text_input("Filter by Actor (phone)")
+            with col_f3:
+                audit_limit = st.slider("Entries", 50, 1000, 200)
+            
+            logs = get_audit_logs(limit=audit_limit, actor_phone=audit_actor or None,
+                                  action=audit_action or None)
+            if not logs:
+                st.info("No audit entries found.")
+            else:
+                st.dataframe([e.to_dict() for e in logs], width="stretch")
+                csv_buf = StringIO()
+                writer = csv.DictWriter(csv_buf, fieldnames=["id", "timestamp", "actor_phone", "action", "target", "details", "status"])
+                writer.writeheader()
+                for e in logs:
+                    writer.writerow(e.to_dict())
+                st.download_button("Download Audit CSV", data=csv_buf.getvalue(),
+                                   file_name="audit_log.csv", mime="text/csv")
+
         # ---------------- ANALYTICS TAB ----------------
         elif selected_adm == "Analytics":
             st.subheader("📊 Reports & Analytics")
@@ -547,13 +506,34 @@ else:
             col_exp1, col_exp2 = st.columns(2)
             with col_exp1:
                 st.markdown("**User Data**")
-                st.download_button("Download Users CSV", data="mock_csv_data", file_name="users.csv")
+                users_csv = StringIO()
+                all_users = list(user_manager.users.values())
+                if all_users:
+                    writer = csv.DictWriter(users_csv, fieldnames=list(all_users[0].to_public_dict().keys()))
+                    writer.writeheader()
+                    for u in all_users:
+                        writer.writerow(u.to_public_dict())
+                st.download_button("Download Users CSV", data=users_csv.getvalue(),
+                                   file_name="users.csv", mime="text/csv")
             with col_exp2:
                 st.markdown("**Transaction Logs**")
-                st.download_button("Download Transactions CSV", data="mock_csv_data", file_name="transactions.csv")
+                tx_csv = StringIO()
+                all_tx = transaction_manager.transactions
+                if all_tx:
+                    writer = csv.DictWriter(tx_csv, fieldnames=list(all_tx[0].to_dict().keys()))
+                    writer.writeheader()
+                    for t in all_tx:
+                        writer.writerow(t.to_dict())
+                st.download_button("Download Transactions CSV", data=tx_csv.getvalue(),
+                                   file_name="transactions.csv", mime="text/csv")
                 
-            st.markdown("### Growth Metrics")
-            st.line_chart([10, 15, 20, 25, 40, 55, 60, 80]) # Mock growth
+            st.markdown("### Daily Transaction Volume")
+            from collections import Counter
+            daily = Counter(t.timestamp[:10] for t in transaction_manager.transactions)
+            if daily:
+                st.bar_chart(daily)
+            else:
+                st.info("No transaction data yet.")
 
         # ---------------- SYSTEM TAB ----------------
         elif selected_adm == "System":
@@ -609,7 +589,7 @@ else:
         st.markdown(f"""
         <div style="text-align: center; padding: 20px;">
             <i class="fa-solid fa-circle-user fa-5x" style="color: #4CAF50;"></i>
-            <h3>{current_user.name}</h3>
+            <h3>{current_user.name} {'<span class="premium-badge">⭐ Premium</span>' if premium_cfg.is_premium_user(current_user) else ''}</h3>
             <p style="color: gray;"><i class="fa-solid fa-phone"></i> {current_user.phone}</p>
         </div>
         """, unsafe_allow_html=True)
@@ -650,15 +630,21 @@ else:
     if not current_user.is_verified:
          st.error(f"⚠️ **{TR('kyc_needed')}** limit: transactions blocked.", icon="🚫")
 
-    # Brand New Opay-Style Wallet Card
+    # Wallet Card (gold premium variant for subscribers)
+    is_premium = premium_cfg.is_premium_user(current_user)
+    wallet_class = "wallet-card premium" if is_premium else "wallet-card"
+    if is_premium:
+        tier_chip = '<span class="premium-badge">⭐ Premium</span>'
+    else:
+        tier_chip = '<span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 10px;">Active</span>'
     st.markdown(f"""
-    <div class="wallet-card">
+    <div class="{wallet_class}">
         <div style="display: flex; justify-content: space-between; align-items: start;">
             <div>
                 <div class="balance-label">{TR('balance')} <i class="fa-regular fa-eye-slash"></i></div>
                 <div class="balance-value">{current_user.currency} {current_user.balance:,.2f}</div>
                 <div class="wallet-details">
-                    <span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 10px;">Active</span>
+                    {tier_chip}
                 </div>
             </div>
             <div style="text-align: right; color: rgba(255,255,255,0.8);">
@@ -669,17 +655,32 @@ else:
     </div>
     """, unsafe_allow_html=True)
     
+    # Premium upsell for free-tier users
+    if not is_premium:
+        st.markdown(f"""
+        <div class="upsell-banner">
+            <strong>⭐ {TR('upgrade_premium')}</strong><br/>
+            <span style="color: var(--mms-muted);">0% transfer fees • half-price withdrawals & bills • 10x limits • loyalty points</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button(f"⭐ {TR('upgrade_now')}", key="upsell_btn"):
+            st.session_state.goto_premium = True
+            st.rerun()
+    
     # Quick Actions Grid (To mimic app home screen)
     # Using columns for buttons to simulate the "Grid"
     
     st.markdown("##### Quick Actions")
 
     # Operations using Option Menu (Styled as Tab Bar)
+    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("settings"), TR("verify_id"), TR("premium")]
+    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "gear", "card-heading", "crown"]
+    goto_premium = st.session_state.pop('goto_premium', False)
     selected_action = option_menu(
         menu_title=None,
-        options=[TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("settings"), TR("verify_id")],
-        icons=["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "gear", "card-heading"],
-        default_index=0,
+        options=nav_options,
+        icons=nav_icons,
+        default_index=9 if goto_premium else 0,
         orientation="horizontal",
         styles={
             "container": {"padding": "0!important", "background-color": "#ffffff", "border-radius": "10px"},
@@ -747,9 +748,10 @@ else:
              st.subheader("Verify Transaction Details")
              st.info("Please review the details below carefully before confirming.")
              
-             # Fee Calculation
-             fee = data['amount'] * 0.01
+             # Fee Calculation (Premium members transfer free)
+             fee = data['amount'] * float(premium_cfg.transfer_fee_rate(current_user))
              total_deduction = data['amount'] + fee
+             fee_label = "0% ⭐ Premium" if fee == 0 else "1%"
 
              with st.container():
                  st.markdown(f"""
@@ -764,7 +766,7 @@ else:
                         <span class="conf-amount" style="color: #4CAF50;">${data['amount']:,.2f}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
-                        <span class="conf-label">Fee (1%)</span><br/>
+                        <span class="conf-label">Fee ({fee_label})</span><br/>
                         <span style="font-size: 1.1em; color: #777;">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
@@ -860,8 +862,9 @@ else:
              data = st.session_state.review_data
              st.subheader("Confirm Bill Payment")
              
-             fee = 0.50
+             fee = float(premium_cfg.bill_fee(current_user))
              total = data['amount'] + fee
+             fee_label = "$0.25 ⭐ Premium" if premium_cfg.is_premium_user(current_user) else "$0.50"
              
              with st.container():
                  st.markdown(f"""
@@ -879,7 +882,7 @@ else:
                         <span class="conf-amount">${data['amount']:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px;">
-                        <span class="conf-label">Service Fee</span><br/>
+                         <span class="conf-label">Service Fee ({fee_label})</span><br/>
                         <span style="color: #777;">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
@@ -988,6 +991,14 @@ else:
                             "icon": "fa-wallet",
                             "color": "#4CAF50"
                         })
+                elif t.type == "SUBSCRIPTION" and t.sender_phone == current_user.phone:
+                    notifications.append({
+                        "time": t.timestamp,
+                        "title": "⭐ Premium",
+                        "msg": f"{t.description}",
+                        "icon": "fa-crown",
+                        "color": "#f5b301"
+                    })
 
             if not notifications:
                 st.info("No notifications.")
@@ -1098,9 +1109,10 @@ else:
              st.subheader(TR("confirm"))
              st.info("Please confirm the withdrawal details below.")
              
-             # Calculate Fee
-             fee = data['amount'] * 0.01
+             # Calculate Fee (Premium members pay 0.5%)
+             fee = data['amount'] * float(premium_cfg.withdrawal_fee_rate(current_user))
              total_deduction = data['amount'] + fee
+             fee_label = "0.5% ⭐ Premium" if premium_cfg.is_premium_user(current_user) else "1%"
              
              with st.container():
                  st.markdown(f"""
@@ -1114,7 +1126,7 @@ else:
                         <span class="conf-amount">${data['amount']:,.2f}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
-                        <span class="conf-label">Fee (1%)</span><br/>
+                        <span class="conf-label">Fee ({fee_label})</span><br/>
                         <span style="font-size: 1.1em; color: #777;">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
@@ -1218,13 +1230,101 @@ else:
 
 
 
+    elif is_selected("premium"):
+        st.subheader(f"⭐ {TR('premium')}")
+        is_prem = premium_cfg.is_premium_user(current_user)
+        
+        if is_prem:
+            st.markdown(f"""
+            <div class="premium-card">
+                <h3>⭐ {TR('premium_member')}</h3>
+                <p>{TR('premium_until')}: <strong>{current_user.premium_expires[:10]}</strong></p>
+                <p>{TR('loyalty_points')}: <strong>{current_user.loyalty_points}</strong>
+                   ({premium_cfg.POINTS_FOR_FREE_MONTH} pts = 1 free month)</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                months = st.number_input(f"{TR('renew_premium')} — months", min_value=1, max_value=12, value=1, key="prem_months")
+                if st.button(f"💳 {TR('renew_premium')} (${float(premium_cfg.PREMIUM_MONTHLY_FEE) * months:.2f})", type="primary"):
+                    success, msg = transaction_manager.subscribe_premium(current_user.phone, int(months))
+                    if success:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            with col_r2:
+                st.write("")
+                st.write("")
+                if st.button(f"🎁 {TR('redeem_points')} ({premium_cfg.POINTS_FOR_FREE_MONTH} pts = 1 month)",
+                             disabled=current_user.loyalty_points < premium_cfg.POINTS_FOR_FREE_MONTH):
+                    success, msg = transaction_manager.redeem_points_for_premium(current_user.phone)
+                    if success:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        else:
+            st.markdown(f"""
+            <div class="premium-card">
+                <h3>⭐ {TR('upgrade_premium')}</h3>
+                <p>{TR('monthly_fee')}: <strong>${premium_cfg.PREMIUM_MONTHLY_FEE}</strong> / 30 days</p>
+                <p>0% transfer fees • 50% off withdrawal & bill fees • 10x transaction limits • loyalty points on every transaction</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if not current_user.is_verified:
+                st.warning("KYC verification is required before upgrading to Premium.")
+            
+            col_u1, col_u2 = st.columns(2)
+            with col_u1:
+                months = st.number_input(f"{TR('monthly_fee')} — months", min_value=1, max_value=12, value=1, key="prem_months_free")
+            with col_u2:
+                st.write("")
+                st.write("")
+                if st.button(f"⭐ {TR('upgrade_now')} — ${float(premium_cfg.PREMIUM_MONTHLY_FEE):.2f}/month", type="primary",
+                             disabled=not current_user.is_verified):
+                    success, msg = transaction_manager.subscribe_premium(current_user.phone, int(months))
+                    if success:
+                        st.success(msg)
+                        st.balloons()
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        
+        # Perk comparison
+        st.markdown(f"### {TR('perks')}")
+        free_limit = premium_cfg.RISK_TIER_LIMITS.get(current_user.risk_tier, premium_cfg.DEFAULT_LIMIT)
+        comparison = [
+            {"perk": "Transfer fee", TR("free_tier"): "1%", TR("premium"): "0% ⭐"},
+            {"perk": "Withdrawal fee", TR("free_tier"): "1%", TR("premium"): "0.5%"},
+            {"perk": "Bill payment fee", TR("free_tier"): "$0.50", TR("premium"): "$0.25"},
+            {"perk": "Per-transaction limit", TR("free_tier"): f"${float(free_limit):,.0f}", TR("premium"): f"${float(free_limit) * premium_cfg.PREMIUM_LIMIT_MULTIPLIER:,.0f} (10x)"},
+            {"perk": TR("loyalty_points"), TR("free_tier"): "—", TR("premium"): "1 pt / $10 spent"},
+        ]
+        st.table(comparison)
+
     elif is_selected("history"):
         st.subheader("Recent Transactions")
         history = transaction_manager.get_history(current_user.phone)
         
         if not history:
-            st.info("No transactions yet.")
+            st.markdown('<div class="empty-state"><i class="fa-solid fa-receipt"></i><p>No transactions yet.</p></div>', unsafe_allow_html=True)
         else:
+            # Spending over recent days (debits only)
+            from collections import defaultdict
+            daily = defaultdict(float)
+            for t in history:
+                is_debit = (t.sender_phone == current_user.phone and t.type in ("TRANSFER", "WITHDRAWAL", "BILL_PAYMENT", "SUBSCRIPTION"))
+                if is_debit:
+                    daily[t.timestamp[:10]] += float(t.amount)
+            if daily:
+                st.markdown(f"#### 📈 {TR('spending')}")
+                st.bar_chart(dict(sorted(daily.items())[-7:]))
             # Sort by timestamp descending
             history.sort(key=lambda x: x.timestamp, reverse=True)
             

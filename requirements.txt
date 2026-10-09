@@ -1,0 +1,3 @@
+# Root requirements — the Azure deploy workflow installs this file.
+# It simply includes the application requirements.
+-r mobile_money_system/requirements.txt

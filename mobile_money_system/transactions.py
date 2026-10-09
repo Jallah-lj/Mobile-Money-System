@@ -6,20 +6,25 @@ from typing import List, Tuple, Optional
 from decimal import Decimal
 
 try:
-    from models import Transaction
-    from database import get_db
+    from models import Transaction, utcnow
+    from database import get_db, init_db
     from users import UserManager
     from ledger import LedgerManager
+    from audit import log_event
+    import premium as premium_cfg
 except ImportError:
-    from mobile_money_system.models import Transaction
-    from mobile_money_system.database import get_db
+    from mobile_money_system.models import Transaction, utcnow
+    from mobile_money_system.database import get_db, init_db
     from mobile_money_system.users import UserManager
     from mobile_money_system.ledger import LedgerManager
+    from mobile_money_system.audit import log_event
+    from mobile_money_system import premium as premium_cfg
 
 class TransactionManager:
     def __init__(self, user_manager: UserManager, db_file: str = "transactions.json", ledger_file: str = "ledger.json"):
         self.user_manager = user_manager
         self.ledger = LedgerManager()
+        init_db()  # Ensure schema exists (safe on fresh databases)
         
         # Configuration Limits (None currently active)
 
@@ -37,7 +42,7 @@ class TransactionManager:
             currency=currency,
             type=t_type, 
             description=description,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=utcnow().isoformat(),
             status=status,
             flagged=flagged,
             flag_reason=flag_reason
@@ -82,7 +87,7 @@ class TransactionManager:
              return False, "Insufficient funds"
             
         # Log Transaction
-        self._create_transaction_record(
+        txn = self._create_transaction_record(
             sender="ADMIN", 
             receiver=phone, 
             amount=abs(amount_decimal), 
@@ -92,6 +97,8 @@ class TransactionManager:
         )
         
         self.user_manager.update_user(phone, balance=new_balance)
+        log_event("ADMIN", t_type, target=txn.id,
+                  details=f"{t_type} of {amount_decimal} for {phone}. Reason: {reason}")
         return True, "Balance adjusted successfully."
 
     def reverse_transaction(self, transaction_id: str) -> Tuple[bool, str]:
@@ -154,17 +161,23 @@ class TransactionManager:
             # Maybe allow small deposits? strict: block all.
             return False, "Transaction blocked: KYC Not Verified."
         
-        # Risk Tier Limits
-        limit = Decimal("5000")
-        if user.risk_tier == "low":
-            limit = Decimal("1000")
-        elif user.risk_tier == "high":
-            limit = Decimal("50000")
+        # Risk Tier + Membership Tier Limits
+        limit = premium_cfg.transaction_limit(user)
             
         if amount > limit:
-            return False, f"Amount exceeds limit for {user.risk_tier} tier ({limit})"
+            tier_label = "premium" if premium_cfg.is_premium_user(user) else user.risk_tier
+            return False, f"Amount exceeds limit for {tier_label} tier ({limit})"
             
         return True, ""
+
+    def _award_loyalty_points(self, user, amount: Decimal) -> int:
+        """Award loyalty points to premium members on spend. Returns points awarded."""
+        if not premium_cfg.is_premium_user(user):
+            return 0
+        points = premium_cfg.points_earned_for(amount)
+        if points > 0:
+            self.user_manager.add_loyalty_points(user.phone, points)
+        return points
 
     def _assess_aml(self, phone: str, amount: Decimal) -> Tuple[bool, str]:
         flagged = False
@@ -176,7 +189,7 @@ class TransactionManager:
             reason.append("Large amount (>10k)")
             
         # 2. Velocity Check (Rapid Movement)
-        now = datetime.utcnow()
+        now = utcnow()
         time_window = (now - timedelta(minutes=5)).isoformat()
         
         with get_db() as conn:
@@ -226,6 +239,7 @@ class TransactionManager:
         if self.ledger.post_entries(entries):
             user.balance += amount_decimal
             self.user_manager.update_user(phone, balance=user.balance)
+            log_event(phone, "DEPOSIT", target=txn.id, details=f"Deposited {amount_decimal}")
             return True, f"Deposited {amount_decimal} successfully."
         else:
             return False, "Transaction failed: Ledger imbalance."
@@ -240,9 +254,10 @@ class TransactionManager:
         
         allowed, msg = self._check_limits(phone, amount_decimal)
         if not allowed:
+            log_event(phone, "WITHDRAWAL", target=phone, details=f"Blocked: {msg}", status="BLOCKED")
             return False, msg
 
-        fee = amount_decimal * Decimal("0.01")
+        fee = amount_decimal * premium_cfg.withdrawal_fee_rate(user)
         total_deduction = amount_decimal + fee
 
         if user.balance < total_deduction:
@@ -268,23 +283,28 @@ class TransactionManager:
             self.ledger.create_entry(txn_wd.id, "SYSTEM_CASH", amount_decimal, "Cash Out")
         ]
 
-        # 2. Fee
-        txn_fee = self._create_transaction_record(
-            sender=phone, 
-            receiver="SYSTEM_REVENUE", 
-            amount=fee, 
-            t_type="FEE", 
-            description=f"Fee: {description}",
-            currency=user.currency
-        )
-        entries_fee = [
-            self.ledger.create_entry(txn_fee.id, phone, -fee, "Withdrawal Fee"),
-            self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
-        ]
+        # 2. Fee (skip ledger entries for a zero-fee premium withdrawal)
+        entries_fee = []
+        if fee > 0:
+            txn_fee = self._create_transaction_record(
+                sender=phone, 
+                receiver="SYSTEM_REVENUE", 
+                amount=fee, 
+                t_type="FEE", 
+                description=f"Fee: {description}",
+                currency=user.currency
+            )
+            entries_fee = [
+                self.ledger.create_entry(txn_fee.id, phone, -fee, "Withdrawal Fee"),
+                self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
+            ]
         
         if self.ledger.post_entries(entries_wd) and self.ledger.post_entries(entries_fee):
             user.balance -= total_deduction
             self.user_manager.update_user(phone, balance=user.balance)
+            points = self._award_loyalty_points(user, amount_decimal)
+            log_event(phone, "WITHDRAWAL", target=txn_wd.id,
+                      details=f"Withdrew {amount_decimal} (fee {fee}){f', +{points} pts' if points else ''}")
             return True, f"Withdrawn ${amount_decimal}."
         else:
             return False, "Transaction failed."
@@ -309,9 +329,11 @@ class TransactionManager:
 
         allowed, msg = self._check_limits(sender_phone, amount_decimal)
         if not allowed:
+            log_event(sender_phone, "TRANSFER", target=receiver_phone,
+                      details=f"Blocked: {msg} ({amount_decimal})", status="BLOCKED")
             return False, msg
 
-        fee = amount_decimal * Decimal("0.01")
+        fee = amount_decimal * premium_cfg.transfer_fee_rate(sender)
         total_deduction = amount_decimal + fee
 
         if sender.balance < total_deduction:
@@ -336,25 +358,34 @@ class TransactionManager:
             self.ledger.create_entry(txn_tr.id, receiver_phone, amount_decimal, "Transfer In")
         ]
 
-        # 2. Fee
-        txn_fee = self._create_transaction_record(
-            sender_phone, 
-            "SYSTEM_REVENUE", 
-            fee, 
-            "FEE", 
-            f"Fee for Transfer",
-            currency=sender.currency
-        )
-        entries_fee = [
-            self.ledger.create_entry(txn_fee.id, sender_phone, -fee, "Transfer Fee"),
-            self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
-        ]
+        # 2. Fee (0% for premium senders — no fee records are created)
+        entries_fee = []
+        if fee > 0:
+            txn_fee = self._create_transaction_record(
+                sender_phone, 
+                "SYSTEM_REVENUE", 
+                fee, 
+                "FEE", 
+                f"Fee for Transfer",
+                currency=sender.currency
+            )
+            entries_fee = [
+                self.ledger.create_entry(txn_fee.id, sender_phone, -fee, "Transfer Fee"),
+                self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
+            ]
 
         if self.ledger.post_entries(entries_tr) and self.ledger.post_entries(entries_fee):
             sender.balance -= total_deduction
             receiver.balance += amount_decimal
             self.user_manager.update_user(sender_phone, balance=sender.balance)
             self.user_manager.update_user(receiver_phone, balance=receiver.balance)
+            points = self._award_loyalty_points(sender, amount_decimal)
+            log_event(sender_phone, "TRANSFER", target=txn_tr.id,
+                      details=f"{amount_decimal} -> {receiver_phone} (fee {fee})"
+                      + (f" - {description}" if description else "")
+                      + (f", +{points} pts" if points else "")
+                      + (" [AML FLAGGED: " + flag_reason + "]" if flagged else ""),
+                      status="SUCCESS")
             return True, "Transfer successful"
         else:
             return False, "Transaction failed"
@@ -369,9 +400,10 @@ class TransactionManager:
 
         allowed, msg = self._check_limits(phone, amount_decimal)
         if not allowed:
+            log_event(phone, "BILL_PAYMENT", target=biller_id, details=f"Blocked: {msg}", status="BLOCKED")
             return False, msg
 
-        fee = Decimal("0.50")
+        fee = premium_cfg.bill_fee(user)
         total_deduction = amount_decimal + fee
         
         if user.balance < total_deduction:
@@ -398,22 +430,27 @@ class TransactionManager:
         ]
         
         # 2. Fee
-        txn_fee = self._create_transaction_record(
-            phone, 
-            "SYSTEM_REVENUE", 
-            fee, 
-            "FEE", 
-            f"Fee: {biller_name}",
-            currency=user.currency
-        )
-        entries_fee = [
-            self.ledger.create_entry(txn_fee.id, phone, -fee, "Bill Fee"),
-            self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
-        ]
+        entries_fee = []
+        if fee > 0:
+            txn_fee = self._create_transaction_record(
+                phone, 
+                "SYSTEM_REVENUE", 
+                fee, 
+                "FEE", 
+                f"Fee: {biller_name}",
+                currency=user.currency
+            )
+            entries_fee = [
+                self.ledger.create_entry(txn_fee.id, phone, -fee, "Bill Fee"),
+                self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
+            ]
         
         if self.ledger.post_entries(entries_bill) and self.ledger.post_entries(entries_fee):
             user.balance -= total_deduction
             self.user_manager.update_user(phone, balance=user.balance)
+            points = self._award_loyalty_points(user, amount_decimal)
+            log_event(phone, "BILL_PAYMENT", target=txn_bill.id,
+                      details=f"{biller_name} {amount_decimal} (fee {fee}){f', +{points} pts' if points else ''}")
             return True, f"Paid {biller_name} successfully."
         else:
             return False, "Transaction Failed"
@@ -458,6 +495,8 @@ class TransactionManager:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE transactions SET status = 'DECLINED' WHERE id = ?", (t_id,))
                 conn.commit()
+            log_event(target_t.sender_phone, "REQUEST_DECLINED", target=t_id,
+                      details=f"Declined request of {target_t.amount} from {target_t.receiver_phone}")
             return True, "Request declined."
             
         elif action == "PAY":
@@ -468,11 +507,125 @@ class TransactionManager:
                     cursor = conn.cursor()
                     cursor.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = ?", (t_id,))
                     conn.commit()
+                log_event(target_t.sender_phone, "REQUEST_PAID", target=t_id,
+                          details=f"Paid request of {target_t.amount} to {target_t.receiver_phone}")
                 return True, "Request paid successfully."
             else:
                 return False, msg
         
         return False, "Invalid action"
+
+    # --- Premium membership ---------------------------------------------------
+
+    def subscribe_premium(self, phone: str, months: int = 1) -> Tuple[bool, str]:
+        """Subscribe (or renew/extend) a Premium membership.
+
+        Charges PREMIUM_MONTHLY_FEE * months from the wallet, posts balanced
+        ledger entries to SYSTEM_REVENUE, and extends the expiry by
+        months * PREMIUM_PERIOD_DAYS (stacking on any remaining time).
+        """
+        user = self.user_manager.get_user(phone)
+        if not user:
+            return False, "User not found"
+        if user.status != "active":
+            return False, f"Account is {user.status}"
+        if not user.is_verified:
+            return False, "KYC verification required before subscribing to Premium."
+        if months < 1:
+            return False, "Invalid subscription period"
+
+        fee = premium_cfg.PREMIUM_MONTHLY_FEE * months
+        if user.balance < fee:
+            return False, f"Insufficient balance. Premium costs ${fee} for {months} month(s)."
+
+        now = utcnow()
+        # Stack onto remaining time if still active, otherwise start fresh
+        if premium_cfg.is_premium_user(user):
+            base = datetime.fromisoformat(user.premium_expires)
+        else:
+            base = now
+        new_expiry = base + timedelta(days=premium_cfg.PREMIUM_PERIOD_DAYS * months)
+        since = user.premium_since or now.isoformat()
+
+        # 1. Subscription charge transaction
+        txn_sub = self._create_transaction_record(
+            sender=phone,
+            receiver="SYSTEM_REVENUE",
+            amount=fee,
+            t_type="SUBSCRIPTION",
+            description=f"Premium membership ({months} month(s))",
+            currency=user.currency
+        )
+        entries = [
+            self.ledger.create_entry(txn_sub.id, phone, -fee, "Premium Subscription Fee"),
+            self.ledger.create_entry(txn_sub.id, "SYSTEM_REVENUE", fee, "Subscription Revenue")
+        ]
+
+        if not self.ledger.post_entries(entries):
+            return False, "Subscription failed: Ledger imbalance."
+
+        # 2. Apply balance + tier
+        user.balance -= fee
+        self.user_manager.update_user(phone, balance=user.balance)
+        self.user_manager.set_premium(phone, premium_cfg.TIER_PREMIUM, since, new_expiry.isoformat())
+
+        log_event(phone, "PREMIUM_UPGRADE", target=txn_sub.id,
+                  details=f"Subscribed {months} month(s) for {fee}, expires {new_expiry.isoformat()}")
+        return True, (f"Welcome to Premium! {months} month(s) activated — "
+                      f"0% transfer fees, half-price withdrawals & bills, "
+                      f"10x limits. Expires {new_expiry.date().isoformat()}.")
+
+    def redeem_points_for_premium(self, phone: str) -> Tuple[bool, str]:
+        """Redeem loyalty points for one free month of Premium (500 points)."""
+        user = self.user_manager.get_user(phone)
+        if not user:
+            return False, "User not found"
+        if user.status != "active":
+            return False, f"Account is {user.status}"
+        if not user.is_verified:
+            return False, "KYC verification required before redeeming rewards."
+        if user.loyalty_points < premium_cfg.POINTS_FOR_FREE_MONTH:
+            return False, (f"Not enough points. You need {premium_cfg.POINTS_FOR_FREE_MONTH} "
+                           f"points for a free month (you have {user.loyalty_points}).")
+
+        now = utcnow()
+        if premium_cfg.is_premium_user(user):
+            base = datetime.fromisoformat(user.premium_expires)
+        else:
+            base = now
+        new_expiry = base + timedelta(days=premium_cfg.PREMIUM_PERIOD_DAYS)
+        since = user.premium_since or now.isoformat()
+
+        # Record the redemption (no money moves, so no ledger entries)
+        txn = self._create_transaction_record(
+            sender=phone,
+            receiver=phone,
+            amount=Decimal("0"),
+            t_type="SUBSCRIPTION",
+            description=f"Redeemed {premium_cfg.POINTS_FOR_FREE_MONTH} loyalty points for 1 free month",
+            currency=user.currency
+        )
+
+        ok, remaining = self.user_manager.deduct_loyalty_points(phone, premium_cfg.POINTS_FOR_FREE_MONTH)
+        if not ok:
+            return False, "Redemption failed: insufficient points."
+        self.user_manager.set_premium(phone, premium_cfg.TIER_PREMIUM, since, new_expiry.isoformat())
+
+        log_event(phone, "PREMIUM_REDEMPTION", target=txn.id,
+                  details=f"Redeemed {premium_cfg.POINTS_FOR_FREE_MONTH} points for 1 month, expires {new_expiry.isoformat()}")
+        return True, (f"Redemption successful! 1 free month of Premium added "
+                      f"({remaining} points remaining). Expires {new_expiry.date().isoformat()}.")
+
+    def get_subscription_status(self, phone: str) -> dict:
+        """Full subscription + fee schedule summary for a user."""
+        user = self.user_manager.get_user(phone)
+        if not user:
+            return {}
+        status = premium_cfg.fee_schedule(user)
+        status["name"] = user.name
+        status["phone"] = user.phone
+        status["premium_since"] = user.premium_since
+        return status
 
     def get_history(self, phone: str) -> List[Transaction]:
         with get_db() as conn:

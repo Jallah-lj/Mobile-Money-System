@@ -2,13 +2,12 @@ import uuid
 import time
 from decimal import Decimal
 from typing import List, Dict, Optional
-from datetime import datetime
 
 try:
-    from models import LedgerEntry
+    from models import LedgerEntry, utcnow
     from database import get_db
 except ImportError:
-    from mobile_money_system.models import LedgerEntry
+    from mobile_money_system.models import LedgerEntry, utcnow
     from mobile_money_system.database import get_db
 
 class LedgerManager:
@@ -51,7 +50,7 @@ class LedgerManager:
             transaction_id=transaction_id,
             account_id=account_id,
             amount=amount,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=utcnow().isoformat(),
             description=description
         )
 

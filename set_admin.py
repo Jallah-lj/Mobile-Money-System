@@ -1,37 +1,40 @@
-import json
+"""Promote a user to admin.
+
+Usage: python set_admin.py <phone_number>
+
+Works against the SQLite database (mobile_money.db). The phone number is
+normalized to E.164 format, matching how users are stored at registration.
+"""
+
+import os
 import sys
 
-def set_admin(phone):
-    db_file = "users.json"
-    
-    # Try looking in 'mobile_money_system' if not in root
-    if not os.path.exists(db_file):
-        db_file = os.path.join("mobile_money_system", "users.json")
-    
-    if not os.path.exists(db_file):
-        print(f"Error: {db_file} not found.")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'mobile_money_system')))
+
+from database import get_db, init_db, DB_PATH  # noqa: E402
+from users import UserManager  # noqa: E402
+
+
+def set_admin(phone: str):
+    init_db()
+    user_manager = UserManager()
+
+    phone_e164 = user_manager.format_phone(phone)
+    user = user_manager.get_user(phone_e164) or user_manager.get_user(phone)
+
+    if not user:
+        print(f"Error: User with phone {phone} not found in {DB_PATH}.")
         return
 
-    try:
-        with open(db_file, "r") as f:
-            users = json.load(f)
-        
-        if phone not in users:
-            print(f"Error: User with phone {phone} not found.")
-            return
-            
-        users[phone]["role"] = "admin"
-        
-        with open(db_file, "w") as f:
-            json.dump(users, f, indent=4)
-            
-        print(f"Success: User {users[phone]['name']} ({phone}) is now an Admin.")
-        
-    except Exception as e:
-        print(f"Error accessing database: {e}")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET role = 'admin' WHERE phone = ?", (user.phone,))
+        conn.commit()
+
+    print(f"Success: User {user.name} ({user.phone}) is now an Admin.")
+
 
 if __name__ == "__main__":
-    import os
     if len(sys.argv) != 2:
         print("Usage: python set_admin.py <phone_number>")
     else:

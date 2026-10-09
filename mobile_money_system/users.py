@@ -3,20 +3,32 @@ import phonenumbers
 import random
 import time
 import hashlib
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from decimal import Decimal
 
 try:
-    from models import User
-    from database import get_db
+    from models import User, utcnow
+    from database import get_db, init_db
+    from audit import log_event
+    import premium as premium_cfg
 except ImportError:
-    from mobile_money_system.models import User
-    from mobile_money_system.database import get_db
+    from mobile_money_system.models import User, utcnow
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.audit import log_event
+    from mobile_money_system import premium as premium_cfg
+
+# --- Login protection configuration ---
+MAX_LOGIN_ATTEMPTS = 5          # Failed attempts before lockout
+LOCKOUT_WINDOW_SECONDS = 15 * 60  # Only failures inside this window count
+LOCKOUT_DURATION_SECONDS = 15 * 60  # How long the lockout lasts
 
 class UserManager:
     def __init__(self):
         # We no longer load all users into memory
         self.otp_storage: Dict[str, dict] = {} # {phone: {'code': '1234', 'expiry': timestamp}}
+        self._failed_logins: Dict[str, List[float]] = {}  # {phone: [timestamps of failures]}
+        self._locked_until: Dict[str, float] = {}         # {phone: unix ts until which login is blocked}
+        init_db()  # Ensure schema exists (safe on fresh databases)
         self._ensure_admin_exists()
 
     def _ensure_admin_exists(self):
@@ -74,6 +86,7 @@ class UserManager:
             ''', (phone_e164, name, hashed_pin, sec_q, hashed_ans, currency))
             conn.commit()
             
+        log_event(phone_e164, "REGISTER", target=phone_e164, details=f"New user registered: {name}")
         return True, f"User registered successfully as {phone_e164}. Please complete KYC to transact."
 
     def submit_kyc(self, phone: str, id_type: str, id_number: str) -> Tuple[bool, str]:
@@ -93,6 +106,9 @@ class UserManager:
             ''', (id_type, id_number, is_verified, phone))
             conn.commit()
             
+        log_event(phone, "KYC_SUBMIT", target=phone,
+                  details=f"id_type={id_type} verified={bool(is_verified)}",
+                  status="SUCCESS" if is_verified else "FAILURE")
         return True, "KYC Updated." if is_verified else "KYC Submitted (Rejected: ID too short)."
 
     def verify_security_answer(self, phone: str, answer_attempt: str) -> bool:
@@ -109,9 +125,49 @@ class UserManager:
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET pin = ? WHERE phone = ?", (hashed_pin, phone))
             conn.commit()
+        log_event(phone, "PIN_RESET", target=phone, details="PIN was reset")
         return True, "PIN reset successfully"
 
+    # --- Login rate limiting / lockout -------------------------------------
+
+    def is_locked_out(self, phone: str) -> Tuple[bool, int]:
+        """Returns (locked, seconds_remaining) for the given phone."""
+        key = self.format_phone(phone)
+        until = self._locked_until.get(key, 0)
+        if until and time.time() < until:
+            return True, int(until - time.time())
+        if until:
+            # Lockout expired — clean up
+            del self._locked_until[key]
+        return False, 0
+
+    def _record_failed_login(self, phone: str):
+        key = self.format_phone(phone)
+        now = time.time()
+        failures = [t for t in self._failed_logins.get(key, [])
+                    if now - t <= LOCKOUT_WINDOW_SECONDS]
+        failures.append(now)
+        self._failed_logins[key] = failures
+        if len(failures) >= MAX_LOGIN_ATTEMPTS:
+            self._locked_until[key] = now + LOCKOUT_DURATION_SECONDS
+            del self._failed_logins[key]
+            log_event(key, "ACCOUNT_LOCKED", target=key,
+                      details=f"Locked out after {MAX_LOGIN_ATTEMPTS} failed attempts",
+                      status="BLOCKED")
+
+    def _clear_failed_logins(self, phone: str):
+        key = self.format_phone(phone)
+        self._failed_logins.pop(key, None)
+        self._locked_until.pop(key, None)
+
     def login(self, phone: str, pin: str) -> Optional[User]:
+        # --- Brute-force protection ---
+        locked, remaining = self.is_locked_out(phone)
+        if locked:
+            log_event(self.format_phone(phone), "LOGIN_FAILURE", target=phone,
+                      details=f"Attempt during lockout ({remaining}s remaining)", status="BLOCKED")
+            return None
+
         # Try finding by original input or formatted
         user = self.get_user(phone)
         if not user:
@@ -121,14 +177,22 @@ class UserManager:
             # Bcrypt check
             try:
                 if bcrypt.checkpw(pin.encode(), user.pin.encode()):
+                    self._clear_failed_logins(phone)
+                    log_event(user.phone, "LOGIN_SUCCESS", target=user.phone)
                     return user
             except Exception:
                 # Fallback for old SHA256 or Plaintext from migration if any (unlikely with new logic but safe)
                 if user.pin == hashlib.sha256(pin.encode()).hexdigest() or user.pin == pin:
                     # Upgrade to bcrypt immediately
                     self.reset_pin(user.phone, pin)
+                    self._clear_failed_logins(phone)
+                    log_event(user.phone, "LOGIN_SUCCESS", target=user.phone,
+                              details="Legacy PIN hash upgraded to bcrypt")
                     return user
                     
+        self._record_failed_login(phone)
+        log_event(self.format_phone(phone), "LOGIN_FAILURE", target=phone,
+                  details="Invalid credentials", status="FAILURE")
         return None
 
     def get_user(self, phone: str) -> Optional[User]:
@@ -159,8 +223,7 @@ class UserManager:
         return code
 
     def verify_otp(self, phone: str, code_attempt: str) -> bool:
-        if code_attempt == "123456":
-            return True
+        """Verify a one-time passcode. Only codes issued by generate_otp are valid."""
         record = self.otp_storage.get(phone)
         if not record:
             return False
@@ -169,7 +232,10 @@ class UserManager:
             return False
         if record['code'] == code_attempt.strip():
             del self.otp_storage[phone]
+            log_event(phone, "OTP_VERIFIED", target=phone)
             return True
+        log_event(phone, "OTP_FAILURE", target=phone, status="FAILURE",
+                  details="Invalid OTP code submitted")
         return False
 
     def update_user(self, phone: str, **kwargs) -> Tuple[bool, str]:
@@ -177,18 +243,23 @@ class UserManager:
         if not user:
             return False, "User not found"
         
-        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance"]
+        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance",
+                          "tier", "premium_since", "premium_expires", "loyalty_points"]
         updates = []
         params = []
         
         for key, value in kwargs.items():
             if key in allowed_fields:
+                if value is None:
+                    continue  # None means "leave unchanged"
                 if key == "pin":
                     value = bcrypt.hashpw(value.encode(), bcrypt.gensalt()).decode()
                 elif key == "sec_a":
                     value = hashlib.sha256(value.lower().strip().encode()).hexdigest()
                 elif key == "balance":
                     value = str(value)
+                elif key == "loyalty_points":
+                    value = int(value)
                 
                 updates.append(f"{key} = ?")
                 params.append(value)
@@ -209,21 +280,81 @@ class UserManager:
         # Legacy placeholder, now handled by individual methods
         pass
 
+    # --- Premium membership helpers ------------------------------------------
+
+    def is_premium(self, phone: str) -> bool:
+        """True if the user currently has an active Premium subscription."""
+        return premium_cfg.is_premium_user(self.get_user(phone))
+
+    def get_fee_schedule(self, phone: str) -> dict:
+        """Current fee schedule / tier summary for a user."""
+        return premium_cfg.fee_schedule(self.get_user(phone))
+
+    def set_premium(self, phone: str, tier: str, since: str, expires: str) -> Tuple[bool, str]:
+        """Set premium tier fields directly (used by subscription/redemption flows)."""
+        user = self.get_user(phone)
+        if not user:
+            return False, "User not found"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            UPDATE users SET tier = ?, premium_since = ?, premium_expires = ? WHERE phone = ?
+            ''', (tier, since, expires, phone))
+            conn.commit()
+        return True, "Premium status updated"
+
+    def add_loyalty_points(self, phone: str, points: int) -> Tuple[bool, int]:
+        """Award loyalty points. Returns (success, new_total)."""
+        user = self.get_user(phone)
+        if not user or points < 0:
+            return False, 0
+        new_total = user.loyalty_points + points
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET loyalty_points = ? WHERE phone = ?", (new_total, phone))
+            conn.commit()
+        return True, new_total
+
+    def deduct_loyalty_points(self, phone: str, points: int) -> Tuple[bool, int]:
+        """Deduct loyalty points (e.g. for redemption). Returns (success, new_total)."""
+        user = self.get_user(phone)
+        if not user or points < 0 or user.loyalty_points < points:
+            return False, user.loyalty_points if user else 0
+        new_total = user.loyalty_points - points
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET loyalty_points = ? WHERE phone = ?", (new_total, phone))
+            conn.commit()
+        return True, new_total
+
+    def list_premium_users(self) -> Dict[str, User]:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE tier = 'premium'")
+            rows = cursor.fetchall()
+            return {row['phone']: User.from_dict(dict(row)) for row in rows}
+
     def admin_reset_pin(self, phone: str) -> Tuple[bool, str]:
         new_pin_raw = str(random.randint(1000, 9999))
         self.reset_pin(phone, new_pin_raw)
+        log_event("ADMIN", "ADMIN_PIN_RESET", target=phone, details=f"Admin reset PIN for {phone}")
         return True, f"PIN reset to: {new_pin_raw}"
 
     def suspend_user(self, phone: str) -> Tuple[bool, str]:
-        return self.update_user(phone, status="suspended")
+        result = self.update_user(phone, status="suspended")
+        log_event("ADMIN", "USER_SUSPENDED", target=phone)
+        return result
         
     def reactivate_user(self, phone: str) -> Tuple[bool, str]:
-        return self.update_user(phone, status="active")
+        result = self.update_user(phone, status="active")
+        log_event("ADMIN", "USER_REACTIVATED", target=phone)
+        return result
         
     def delete_user(self, phone: str) -> Tuple[bool, str]:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM users WHERE phone = ?", (phone,))
             conn.commit()
+        log_event("ADMIN", "USER_DELETED", target=phone)
         return True, "User permanently deleted."
 

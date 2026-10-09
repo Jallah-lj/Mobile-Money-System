@@ -1,54 +1,46 @@
-# Mobile Money System
+# Mobile Money System — Package
 
- A comprehensive Mobile Money simulation built with Python and Streamlit. This application mimics a real-world fintech platform with features for users and administrators.
+Core package for the Mobile Money platform. See the [root README](../../README.md)
+for the full feature overview (Premium membership, security, quickstart).
 
-## 📱 Features
+## Modules
 
-### User Features
-- **Secure Authentication**: Login with Phone and PIN.
-- **Registration**: Sign up with improved security (Security Questions).
-- **Send Money**: Transfer funds to other users with a verification review screen.
-- **Pay Bills**: Pay for Utilities (Electricity, Water) and Airtime with confirmation.
-- **Load Money**: Simulate funding your wallet from a connected bank card.
-- **Withdraw**: Withdraw funds with automatic fee calculation.
-- **Transaction History**: Detailed history view with downloadable receipts.
-- **Inbox**: Real-time notifications for received funds and bill payments.
-- **Security**: SHA-256 Hashing for PINs.
+| Module | Responsibility |
+|---|---|
+| `app.py` | Streamlit web app — user dashboard + admin panel |
+| `api.py` | FastAPI REST API — set `MMS_API_KEY` to enable key auth |
+| `main.py` | CLI client — includes the Premium membership menu |
+| `premium.py` | Premium tier engine (perks, fee schedule, limits, loyalty points) |
+| `audit.py` | Append-only audit log of security-relevant events |
+| `transactions.py` | Financial operations: fees, limits, AML, subscriptions |
+| `users.py` | Auth (bcrypt + lockout + OTP), KYC, user & premium helpers |
+| `database.py` | SQLite schema + idempotent migrations (auto-runs on startup) |
+| `ledger.py` | Double-entry bookkeeping — every posted batch sums to zero |
+| `models.py` | `User`, `Transaction`, `LedgerEntry`, `AuditEntry` dataclasses |
+| `i18n.py` | Translations: English, Français, Español, Swahili |
+| `styles.py` | Premium design system with light & dark themes |
 
-### Admin Features
-- **Dashboard**: View system-wide metrics (Total Users, Liquidity, Revenue).
-- **User Directory**: List all registered users and their balances.
-- **Transaction Logs**: Audit trail of every transaction in the system.
+## Run
 
-## ⚙️ System Controls
-- **Transaction Limits**: None
-- **Fees**:
-  - Transfers: 1%
-  - Withdrawals: 1%
-  - Bill Payments: $0.50 (Flat Fee)
+```bash
+# Web app
+streamlit run mobile_money_system/app.py
 
-## 🚀 How to Run
+# REST API (from the repo root)
+MMS_API_KEY=change-me uvicorn mobile_money_system.api:app --reload
 
-1. **Install Dependencies**:
-   ```bash
-   pip install -r mobile_money_system/requirements.txt
-   ```
+# CLI
+python mobile_money_system/main.py
+```
 
-2. **Run the Application**:
-   ```bash
-   streamlit run mobile_money_system/app.py
-   ```
+## Fee schedule
 
-3. **Access the App**:
-   - The app will open in your browser (usually at http://localhost:8501).
+| Operation | Free tier | Premium |
+|---|---|---|
+| Transfer | 1% | 0% |
+| Withdrawal | 1% | 0.5% |
+| Bill payment | $0.50 flat | $0.25 flat |
+| Per-transaction limit | risk-tier scaled ($1k–$50k) | 10× |
 
-## 🛠️ Setup & Utilities
-
-- **Creating an Admin**:
-  The system uses a `users.json` file. To promote a user to Admin, you can use the helper script (if provided) or manually edit the JSON file to set `"role": "admin"` for a specific user.
-
-## 📂 Project Structure
-- `app.py`: Main Streamlit web application.
-- `transactions.py`: Core logic for financial operations, limits, and fees.
-- `users.py`: User management and authentication logic.
-- `data/*.json`: Data persistence for Users and Transactions.
+Premium subscription: **$4.99 / 30 days** (stacks on renewal; 500 loyalty
+points = 1 free month; KYC required).
