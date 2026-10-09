@@ -107,7 +107,7 @@ st.markdown(f"""
     }}
 }}
 </style>
-<h1 class="app-title" style="text-align: center; color: #4CAF50;"><i class="fa-solid fa-money-bill-transfer"></i> {TR('app_title')}</h1>
+<h1 class="app-title" style="text-align: center; color: var(--mms-primary-deep);"><i class="fa-solid fa-money-bill-transfer"></i> {TR('app_title')}</h1>
 """, unsafe_allow_html=True)
 
 if not current_user:
@@ -131,7 +131,7 @@ if not current_user:
             styles={
                 "container": {"background-color": "transparent"},
                 "nav-link": {"font-size": "14px"},
-                "nav-link-selected": {"background-color": "#00C853"},
+                "nav-link-selected": {"background-color": "#007a1e"},
             }
         )
         
@@ -588,9 +588,9 @@ else:
 
         st.markdown(f"""
         <div style="text-align: center; padding: 20px;">
-            <i class="fa-solid fa-circle-user fa-5x" style="color: #4CAF50;"></i>
+            <i class="fa-solid fa-circle-user fa-5x" style="color: var(--mms-primary-deep);"></i>
             <h3>{current_user.name} {'<span class="premium-badge">⭐ Premium</span>' if premium_cfg.is_premium_user(current_user) else ''}</h3>
-            <p style="color: gray;"><i class="fa-solid fa-phone"></i> {current_user.phone}</p>
+            <p style="color: var(--mms-muted);"><i class="fa-solid fa-phone"></i> {current_user.phone}</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -614,7 +614,7 @@ else:
             
             st.markdown(f"""
             <div style="text-align: center; margin-bottom: 20px; padding: 10px; background: white; border-radius: 10px;">
-                <p style='font-size: 0.8em; color: gray;'>Scan to Request/Pay</p>
+                <p style='font-size: 0.8em; color: var(--mms-muted);'>Scan to Request/Pay</p>
                 <img src="data:image/png;base64,{img_str}" width="150" />
             </div>
             """, unsafe_allow_html=True)
@@ -635,8 +635,10 @@ else:
     wallet_class = "wallet-card premium" if is_premium else "wallet-card"
     if is_premium:
         tier_chip = '<span class="premium-badge">⭐ Premium</span>'
+        phone_color = "rgba(69, 26, 3, 0.75)"   # dark brown on the gold card
     else:
         tier_chip = '<span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 10px;">Active</span>'
+        phone_color = "rgba(255, 255, 255, 0.8)"  # white on the green card
     st.markdown(f"""
     <div class="{wallet_class}">
         <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -647,7 +649,7 @@ else:
                     {tier_chip}
                 </div>
             </div>
-            <div style="text-align: right; color: rgba(255,255,255,0.8);">
+            <div style="text-align: right; color: {phone_color};">
                 <i class="fa-solid fa-signal"></i><br/>
                 <small>{current_user.phone}</small>
             </div>
@@ -676,6 +678,9 @@ else:
     nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("settings"), TR("verify_id"), TR("premium")]
     nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "gear", "card-heading", "crown"]
     goto_premium = st.session_state.pop('goto_premium', False)
+    # Theme-aware nav colors: the icon must pass AA on the themed container
+    # (bright green in dark mode, deep green in light mode).
+    nav_icon_color = "#00e676" if st.session_state.get("dark_mode", False) else "#007a1e"
     selected_action = option_menu(
         menu_title=None,
         options=nav_options,
@@ -683,10 +688,10 @@ else:
         default_index=9 if goto_premium else 0,
         orientation="horizontal",
         styles={
-            "container": {"padding": "0!important", "background-color": "#ffffff", "border-radius": "10px"},
-            "icon": {"color": "#00C853", "font-size": "16px"}, 
-            "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px", "--hover-color": "#e8f5e9"},
-            "nav-link-selected": {"background-color": "#00C853"},
+            "container": {"padding": "0!important", "background-color": "var(--mms-surface)", "border-radius": "10px"},
+            "icon": {"color": nav_icon_color, "font-size": "16px"},
+            "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px", "--hover-color": "var(--mms-primary-soft)"},
+            "nav-link-selected": {"background-color": "#007a1e"},
         }
     )
     
@@ -758,20 +763,20 @@ else:
                  <div class="conf-card">
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Recipient</span><br/>
-                        <span style="font-size: 1.3em; font-weight: bold; color: #333;">{data['receiver_name']}</span> <br/>
-                        <span style="color: gray; font-family: monospace;">{data['receiver_phone']}</span>
+                        <span style="font-size: 1.3em; font-weight: bold; color: var(--mms-text);">{data['receiver_name']}</span> <br/>
+                        <span style="color: var(--mms-muted); font-family: monospace;">{data['receiver_phone']}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Amount</span><br/>
-                        <span class="conf-amount" style="color: #4CAF50;">${data['amount']:,.2f}</span>
+                        <span class="conf-amount" style="color: var(--mms-primary-deep);">${data['amount']:,.2f}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Fee ({fee_label})</span><br/>
-                        <span style="font-size: 1.1em; color: #777;">${fee:,.2f}</span>
+                        <span style="font-size: 1.1em; color: var(--mms-muted);">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
                         <span class="conf-label">Total Deduction</span><br/>
-                        <span style="font-size: 1.3em; font-weight: bold; color: #d9534f;">${total_deduction:,.2f}</span>
+                        <span style="font-size: 1.3em; font-weight: bold; color: var(--mms-danger);">${total_deduction:,.2f}</span>
                     </div>
                     <div>
                         <span class="conf-label">Reference</span><br/>
@@ -871,7 +876,7 @@ else:
                  <div class="conf-card">
                     <div style="margin-bottom: 15px;">
                          <span class="conf-label">Service</span><br/>
-                        <span style="font-size: 1.2em; font-weight: bold; color: #333;">{data['biller_name']}</span>
+                        <span style="font-size: 1.2em; font-weight: bold; color: var(--mms-text);">{data['biller_name']}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Account/ID</span><br/>
@@ -883,11 +888,11 @@ else:
                     </div>
                      <div style="margin-bottom: 15px;">
                          <span class="conf-label">Service Fee ({fee_label})</span><br/>
-                        <span style="color: #777;">${fee:,.2f}</span>
+                        <span style="color: var(--mms-muted);">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
                         <span class="conf-label">Total to Pay</span><br/>
-                        <span style="font-size: 1.3em; font-weight: bold; color: #d9534f;">${total:,.2f}</span>
+                        <span style="font-size: 1.3em; font-weight: bold; color: var(--mms-danger);">${total:,.2f}</span>
                     </div>
                  </div>
                  """, unsafe_allow_html=True)
@@ -931,11 +936,11 @@ else:
                          req_name = requester.name if requester else "Unknown"
                          
                          st.markdown(f"""
-                         <div style="border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin-bottom: 7px;">
+                         <div style="border: 1px solid var(--mms-border); padding: 15px; border-radius: 8px; margin-bottom: 7px;">
                             <div style="font-weight: bold;">Request from {req_name} ({req.receiver_phone})</div>
-                            <div style="font-size: 1.25em; color: #d9534f;">${req.amount:,.2f}</div>
-                            <div style="color: gray; font-style: italic;">"{req.description}"</div>
-                            <div style="font-size: 0.8em; color: #888;">{req.timestamp}</div>
+                            <div style="font-size: 1.25em; color: var(--mms-danger);">${req.amount:,.2f}</div>
+                            <div style="color: var(--mms-muted); font-style: italic;">"{req.description}"</div>
+                            <div style="font-size: 0.8em; color: var(--mms-muted);">{req.timestamp}</div>
                          </div>
                          """, unsafe_allow_html=True)
                          
@@ -972,7 +977,7 @@ else:
                         "title": "Money Received",
                         "msg": f"You received {t.currency} {t.amount:,.2f} from {t.sender_phone}",
                         "icon": "fa-arrow-down",
-                        "color": "#5cb85c"
+                        "color": "var(--mms-primary-deep)"
                     })
                 elif t.type == "BILL_PAYMENT" and t.sender_phone == current_user.phone:
                     notifications.append({
@@ -980,7 +985,7 @@ else:
                         "title": "Bill Paid",
                         "msg": f"Payment of {t.currency} {t.amount:,.2f} for {t.description} successful.",
                         "icon": "fa-receipt",
-                        "color": "gray"
+                        "color": "var(--mms-muted)"
                     })
                 elif t.type == "DEPOSIT" and t.sender_phone == "SYSTEM": 
                      if t.receiver_phone == current_user.phone: # It's a credit
@@ -989,7 +994,7 @@ else:
                             "title": "Deposit Successful",
                             "msg": f"Your account was credited with {t.currency} {t.amount:,.2f}.",
                             "icon": "fa-wallet",
-                            "color": "#4CAF50"
+                            "color": "var(--mms-primary-deep)"
                         })
                 elif t.type == "SUBSCRIPTION" and t.sender_phone == current_user.phone:
                     notifications.append({
@@ -997,7 +1002,7 @@ else:
                         "title": "⭐ Premium",
                         "msg": f"{t.description}",
                         "icon": "fa-crown",
-                        "color": "#f5b301"
+                        "color": "var(--mms-gold-dark)"
                     })
 
             if not notifications:
@@ -1010,8 +1015,8 @@ else:
                         <div style="margin-right: 15px; color: {n['color']};"><i class="fa-solid {n['icon']}"></i></div>
                         <div>
                             <div style="font-weight: bold; font-size: 0.95em;">{n['title']}</div>
-                            <div style="color: #555; font-size: 0.9em;">{n['msg']}</div>
-                            <div style="color: #999; font-size: 0.75em; margin-top: 4px;">{n['time'].replace('T', ' ')[:16]}</div>
+                            <div style="color: var(--mms-text); font-size: 0.9em;">{n['msg']}</div>
+                            <div style="color: var(--mms-muted); font-size: 0.75em; margin-top: 4px;">{n['time'].replace('T', ' ')[:16]}</div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -1057,7 +1062,7 @@ else:
                  <div class="conf-card">
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Source</span><br/>
-                        <span style="font-size: 1.2em; font-weight: bold; color: #333;">Linked Bank Card</span>
+                        <span style="font-size: 1.2em; font-weight: bold; color: var(--mms-text);">Linked Bank Card</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">{TR('amount')}</span><br/>
@@ -1119,7 +1124,7 @@ else:
                  <div class="conf-card">
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Transaction Type</span><br/>
-                        <span style="font-size: 1.2em; font-weight: bold; color: #d9534f;">WITHDRAWAL</span>
+                        <span style="font-size: 1.2em; font-weight: bold; color: var(--mms-danger);">WITHDRAWAL</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">{TR('amount')}</span><br/>
@@ -1127,11 +1132,11 @@ else:
                     </div>
                     <div style="margin-bottom: 15px;">
                         <span class="conf-label">Fee ({fee_label})</span><br/>
-                        <span style="font-size: 1.1em; color: #777;">${fee:,.2f}</span>
+                        <span style="font-size: 1.1em; color: var(--mms-muted);">${fee:,.2f}</span>
                     </div>
                      <div style="margin-bottom: 15px; border-top: 1px dashed #ccc; pt-2;">
                         <span class="conf-label">Total Deduction</span><br/>
-                        <span style="font-size: 1.3em; font-weight: bold; color: #d9534f;">${total_deduction:,.2f}</span>
+                        <span style="font-size: 1.3em; font-weight: bold; color: var(--mms-danger);">${total_deduction:,.2f}</span>
                     </div>
                     <div>
                         <span class="conf-label">Reference</span><br/>
@@ -1333,32 +1338,38 @@ else:
                 if t.type == "TRANSFER":
                     if t.sender_phone == current_user.phone:
                          icon = "fa-solid fa-arrow-turn-up"
-                         color = "#d9534f" # Red
+                         color = "var(--mms-danger)"
+                         icon_bg = "var(--mms-danger-soft)"
                          badge = "DEBIT"
                          desc_text = f"To: {t.receiver_phone}"
                     else:
                          icon = "fa-solid fa-arrow-turn-down"
-                         color = "#5cb85c" # Green
+                         color = "var(--mms-primary-deep)"
+                         icon_bg = "var(--mms-primary-soft)"
                          badge = "CREDIT"
                          desc_text = f"From: {t.sender_phone}"
                 elif t.type == "DEPOSIT":
                     icon = "fa-solid fa-circle-plus"
-                    color = "#5cb85c"
+                    color = "var(--mms-primary-deep)"
+                    icon_bg = "var(--mms-primary-soft)"
                     badge = "CREDIT"
                     desc_text = "System Deposit"
                 elif t.type == "WITHDRAWAL":
                     icon = "fa-solid fa-circle-minus"
-                    color = "#d9534f"
+                    color = "var(--mms-danger)"
+                    icon_bg = "var(--mms-danger-soft)"
                     badge = "DEBIT"
                     desc_text = "System Withdrawal"
                 elif t.type == "BILL_PAYMENT":
                     icon = "fa-solid fa-file-invoice-dollar"
-                    color = "#d9534f"
+                    color = "var(--mms-danger)"
+                    icon_bg = "var(--mms-danger-soft)"
                     badge = "DEBIT"
                     desc_text = "Bill Payment"
                 else:
                     icon = "fa-solid fa-list"
-                    color = "gray"
+                    color = "var(--mms-muted)"
+                    icon_bg = "var(--mms-surface-2)"
                     badge = "INFO"
                     desc_text = "Transaction"
 
@@ -1399,12 +1410,12 @@ Status: Successful
                 with st.expander(f"{detail_text}", expanded=False):
                     st.markdown(f"""
                     <div class="tx-card">
-                        <div class="tx-icon" style="color: {color}; background-color: {color}15;">
+                        <div class="tx-icon" style="color: {color}; background-color: {icon_bg};">
                             <i class="{icon}"></i>
                         </div>
                         <div class="tx-details">
-                            <div style="font-weight: 500; color: #333;">{detail_text}</div>
-                            <div style="font-size: 0.8rem; color: #888;">{t.timestamp.replace('T', ' ')[:16]}</div>
+                            <div style="font-weight: 500; color: var(--mms-text);">{detail_text}</div>
+                            <div style="font-size: 0.8rem; color: var(--mms-muted);">{t.timestamp.replace('T', ' ')[:16]}</div>
                         </div>
                         <div class="tx-amount {amt_class}">
                             {'+' if badge=='CREDIT' else '-'} {t.currency} {t.amount:,.2f}

@@ -21,18 +21,21 @@ LIGHT_TOKENS = {
     "surface": "#ffffff",
     "surface-2": "#f8fafc",
     "text": "#0f172a",
-    "muted": "#64748b",
+    "muted": "#5c6a7d",
     "border": "#e2e8f0",
     "primary": "#00C853",
     "primary-dark": "#009624",
+    "primary-deep": "#007a1e",
     "primary-soft": "#e8f9ee",
     "gold": "#f5b301",
     "gold-dark": "#b45309",
     "gold-soft": "#fef3c7",
-    "danger": "#e11d48",
+    "danger": "#cc1843",
     "danger-soft": "#ffe4e9",
     "shadow": "0 10px 30px rgba(15, 23, 42, 0.08)",
     "shadow-sm": "0 2px 8px rgba(15, 23, 42, 0.06)",
+    "title-gradient": "linear-gradient(135deg, #008a24 0%, #00701a 100%)",
+    "btn-gradient": "linear-gradient(135deg, #008a24 0%, #005c14 100%)",
 }
 
 DARK_TOKENS = {
@@ -44,6 +47,7 @@ DARK_TOKENS = {
     "border": "#243452",
     "primary": "#00e676",
     "primary-dark": "#00c853",
+    "primary-deep": "#00e676",
     "primary-soft": "#123524",
     "gold": "#fbbf24",
     "gold-dark": "#f59e0b",
@@ -52,11 +56,16 @@ DARK_TOKENS = {
     "danger-soft": "#3f1d2b",
     "shadow": "0 10px 30px rgba(0, 0, 0, 0.45)",
     "shadow-sm": "0 2px 8px rgba(0, 0, 0, 0.35)",
+    "title-gradient": "linear-gradient(135deg, #00e676 0%, #00c853 100%)",
+    "btn-gradient": "linear-gradient(135deg, #008a24 0%, #005c14 100%)",
 }
 
-# Brand gradients (same in both themes)
-WALLET_GRADIENT = "linear-gradient(135deg, #00C853 0%, #009624 60%, #00701a 100%)"
-PREMIUM_GRADIENT = "linear-gradient(135deg, #fbbf24 0%, #f59e0b 45%, #b45309 100%)"
+# Brand gradients (same in both themes). All text-on-gradient pairs are chosen
+# to meet WCAG AA contrast (white on the green wallet card >= 4.5:1, dark
+# brown on the gold premium card >= 7:1).
+WALLET_GRADIENT = "linear-gradient(135deg, #008a24 0%, #00701a 60%, #005c14 100%)"
+PREMIUM_GRADIENT = "linear-gradient(135deg, #fcd34d 0%, #fbbf24 50%, #f59e0b 100%)"
+PREMIUM_TEXT = "#451a03"  # Dark brown on gold — 7:1 to 10:1 contrast
 
 
 def _tokens_css(t: dict) -> str:
@@ -83,15 +92,10 @@ def _dark_mode_overrides() -> str:
             color: var(--mms-text);
         }
 
-        /* Hardcoded gray inline colors inside our custom HTML blocks would be
-           unreadable on dark surfaces — map them to the muted token. */
-        [style*="color: #333"],
-        [style*="color: #555"],
-        [style*="color: #777"],
-        [style*="color: #888"],
-        [style*="color: #999"],
-        [style*="color: gray"] {
-            color: var(--mms-muted) !important;
+        /* Outline-button hover: the hover fill is the bright dark-mode green,
+           so keep the label dark — white on it would be nearly invisible. */
+        .stButton > button:hover {
+            color: #0b1220 !important;
         }
     """
 
@@ -171,14 +175,15 @@ def get_custom_css(dark: bool = False) -> str:
         /* --- Typography --- */
         /* App title: solid brand color as a safe fallback; the gradient text
            is only applied when the browser supports background-clip: text,
-           so the title can never render invisible. */
+           so the title can never render invisible. Both the fallback and
+           the gradient meet WCAG AA contrast on the canvas. */
         .app-title {{
-            color: var(--mms-primary-dark);
+            color: var(--mms-primary-deep);
             font-weight: 800;
         }}
         @supports ((-webkit-background-clip: text) or (background-clip: text)) {{
             .app-title {{
-                background: var(--mms-wallet-gradient);
+                background: var(--mms-title-gradient);
                 -webkit-background-clip: text;
                 background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -199,8 +204,12 @@ def get_custom_css(dark: bool = False) -> str:
         }}
         .wallet-card.premium {{
             background: var(--mms-premium-gradient);
+            color: {PREMIUM_TEXT};
             box-shadow: 0 10px 25px rgba(245, 179, 1, 0.35);
             animation: fadeIn 0.8s ease-out, pulse-gold 2.5s ease-out 1;
+        }}
+        .wallet-card.premium .balance-value {{
+            text-shadow: none;
         }}
         .wallet-card::before {{
             content: "";
@@ -235,7 +244,7 @@ def get_custom_css(dark: bool = False) -> str:
         .premium-badge {{
             display: inline-block;
             background: var(--mms-premium-gradient);
-            color: #fff;
+            color: {PREMIUM_TEXT};
             font-weight: 700;
             font-size: 0.72rem;
             letter-spacing: 1px;
@@ -246,7 +255,7 @@ def get_custom_css(dark: bool = False) -> str:
         }}
         .premium-card {{
             background: var(--mms-premium-gradient);
-            color: #fff;
+            color: {PREMIUM_TEXT};
             padding: 24px;
             border-radius: 18px;
             box-shadow: 0 12px 30px rgba(245, 179, 1, 0.35);
@@ -265,7 +274,7 @@ def get_custom_css(dark: bool = False) -> str:
             animation: shimmer 3.5s infinite;
             background-size: 200% 100%;
         }}
-        .premium-card h3, .premium-card p, .premium-card li {{ color: #fff; }}
+        .premium-card h3, .premium-card p, .premium-card li {{ color: {PREMIUM_TEXT}; }}
         .upsell-banner {{
             background: var(--mms-surface);
             border: 1px solid var(--mms-gold);
@@ -356,12 +365,12 @@ def get_custom_css(dark: bool = False) -> str:
             border: 1px dashed var(--mms-border);
             border-radius: 14px;
         }}
-        .empty-state i {{ font-size: 2.5rem; margin-bottom: 10px; color: var(--mms-primary); }}
+        .empty-state i {{ font-size: 2.5rem; margin-bottom: 10px; color: var(--mms-primary-deep); }}
 
         /* --- Buttons --- */
         .stButton > button {{
             background-color: var(--mms-surface) !important;
-            color: var(--mms-primary-dark) !important;
+            color: var(--mms-primary-deep) !important;
             border: 2px solid var(--mms-primary) !important;
             border-radius: 12px !important;
             padding: 0.5rem 1rem !important;
@@ -370,14 +379,14 @@ def get_custom_css(dark: bool = False) -> str:
             width: 100%;
         }}
         .stButton > button:hover {{
-            background-color: var(--mms-primary) !important;
+            background-color: var(--mms-primary-deep) !important;
             color: white !important;
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 200, 83, 0.25);
+            box-shadow: 0 5px 15px rgba(0, 122, 30, 0.25);
         }}
         div[data-testid="stForm"] .stButton > button,
         .stButton > button[kind="primary"] {{
-             background: var(--mms-wallet-gradient) !important;
+             background: var(--mms-btn-gradient) !important;
              color: white !important;
              border: none !important;
         }}
@@ -491,7 +500,7 @@ def get_custom_css(dark: bool = False) -> str:
             font-size: 1.1rem;
         }}
         .tx-details {{ flex-grow: 1; color: var(--mms-text); }}
-        .tx-amount.credit {{ color: var(--mms-primary-dark); font-weight: 700; }}
+        .tx-amount.credit {{ color: var(--mms-primary-deep); font-weight: 700; }}
         .tx-amount.debit {{ color: var(--mms-danger); font-weight: 700; }}
 {dark_block}
         /* --- Mobile responsiveness --- */
