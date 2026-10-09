@@ -2,6 +2,16 @@
 
 `get_custom_css(dark=...)` returns a complete theme stylesheet built from
 design tokens, so the light and dark themes share one source of truth.
+
+Theme-safety rules (learned the hard way):
+  * We never force a text color onto Streamlit's native components globally.
+    Streamlit follows the browser's color scheme by default, so a global
+    override can paint dark text onto dark native surfaces (invisible text).
+    Native components keep their own theme; only our custom components use
+    the tokens below.
+  * In dark mode we additionally recolor only the native text that sits on
+    the (now dark) canvas, via scoped selectors that do not touch the
+    semantic colors inside our custom cards.
 """
 
 # --- Design tokens -----------------------------------------------------------
@@ -53,8 +63,42 @@ def _tokens_css(t: dict) -> str:
     return "\n".join(f"    --mms-{k}: {v};" for k, v in t.items())
 
 
+def _dark_mode_overrides() -> str:
+    """Dark-mode-only rules aligning native Streamlit elements with the dark canvas."""
+    return """
+        /* ===== Dark mode: align native elements with the dark canvas ===== */
+
+        /* Sidebar text (themed via tokens in both modes, restated for clarity) */
+        section[data-testid="stSidebar"] * {
+            color: var(--mms-text);
+        }
+
+        /* Native text sitting directly on the dark canvas:
+           markdown, headings and widget labels. Scoped selectors — they beat
+           Streamlit's emotion classes by specificity but never flatten the
+           semantic colors inside our custom cards. */
+        .block-container [data-testid="stMarkdown"],
+        .block-container [data-testid="stHeading"],
+        .block-container label {
+            color: var(--mms-text);
+        }
+
+        /* Hardcoded gray inline colors inside our custom HTML blocks would be
+           unreadable on dark surfaces — map them to the muted token. */
+        [style*="color: #333"],
+        [style*="color: #555"],
+        [style*="color: #777"],
+        [style*="color: #888"],
+        [style*="color: #999"],
+        [style*="color: gray"] {
+            color: var(--mms-muted) !important;
+        }
+    """
+
+
 def get_custom_css(dark: bool = False) -> str:
     t = DARK_TOKENS if dark else LIGHT_TOKENS
+    dark_block = _dark_mode_overrides() if dark else ""
     return f"""
     <style>
         /* Import Google Font */
@@ -68,10 +112,22 @@ def get_custom_css(dark: bool = False) -> str:
             --mms-premium-gradient: {PREMIUM_GRADIENT};
         }}
 
-        html, body, [class*="css"] {{
+        /* Page canvas. NOTE: we deliberately do NOT set a global text color on
+           Streamlit's native elements ([class*="css"]) — Streamlit follows the
+           browser color scheme, and forcing our token color there can make
+           native text invisible. Only the font is shared. */
+        html, body {{
             font-family: 'Inter', sans-serif;
             background-color: var(--mms-bg);
             color: var(--mms-text);
+        }}
+        [class*="css"] {{
+            font-family: 'Inter', sans-serif;
+        }}
+
+        /* App canvas follows the active theme */
+        .stApp {{
+            background-color: var(--mms-bg);
         }}
 
         /* Hides Streamlit Default chrome */
@@ -113,13 +169,20 @@ def get_custom_css(dark: bool = False) -> str:
         }}
 
         /* --- Typography --- */
-        h1, h2, h3 {{ color: var(--mms-text); }}
+        /* App title: solid brand color as a safe fallback; the gradient text
+           is only applied when the browser supports background-clip: text,
+           so the title can never render invisible. */
         .app-title {{
-            background: var(--mms-wallet-gradient);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: var(--mms-primary-dark);
             font-weight: 800;
+        }}
+        @supports ((-webkit-background-clip: text) or (background-clip: text)) {{
+            .app-title {{
+                background: var(--mms-wallet-gradient);
+                -webkit-background-clip: text;
+                background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }}
         }}
 
         /* --- Wallet Card --- */
@@ -211,6 +274,7 @@ def get_custom_css(dark: bool = False) -> str:
             padding: 18px 22px;
             box-shadow: var(--mms-shadow-sm);
             margin-bottom: 18px;
+            color: var(--mms-text);
         }}
         .perk-row {{
             display: flex;
@@ -226,6 +290,7 @@ def get_custom_css(dark: bool = False) -> str:
             border-radius: 12px;
             padding: 14px 18px;
             box-shadow: var(--mms-shadow-sm);
+            color: var(--mms-text);
         }}
         .stat-chip .stat-label {{
             color: var(--mms-muted);
@@ -242,7 +307,6 @@ def get_custom_css(dark: bool = False) -> str:
         /* --- Generic cards --- */
         .metric-card {{
             background-color: var(--mms-surface);
-            border-left: 5px solid var(--mms-primary);
             border-radius: 12px;
             padding: 20px;
             box-shadow: var(--mms-shadow-sm);
@@ -251,6 +315,7 @@ def get_custom_css(dark: bool = False) -> str:
             margin-bottom: 10px;
             border: 1px solid var(--mms-border);
             border-left: 5px solid var(--mms-primary);
+            color: var(--mms-text);
         }}
         .metric-card:hover {{ transform: translateY(-2px); }}
         .metric-title {{
@@ -342,6 +407,7 @@ def get_custom_css(dark: bool = False) -> str:
             border-radius: 16px;
             box-shadow: var(--mms-shadow-sm);
             border: 1px solid var(--mms-border);
+            color: var(--mms-text);
         }}
 
         /* --- Dataframes / tables --- */
@@ -410,6 +476,7 @@ def get_custom_css(dark: bool = False) -> str:
             border: 1px solid var(--mms-border);
             border-left: 4px solid var(--mms-primary);
             box-shadow: var(--mms-shadow-sm);
+            color: var(--mms-text);
         }}
         .tx-card:hover {{ background: var(--mms-surface-2); }}
         .tx-icon {{
@@ -426,13 +493,7 @@ def get_custom_css(dark: bool = False) -> str:
         .tx-details {{ flex-grow: 1; color: var(--mms-text); }}
         .tx-amount.credit {{ color: var(--mms-primary-dark); font-weight: 700; }}
         .tx-amount.debit {{ color: var(--mms-danger); font-weight: 700; }}
-
-        /* --- Alerts --- */
-        div[data-testid="stAlert"] {{
-            border-radius: 12px;
-            border: 1px solid var(--mms-border);
-        }}
-
+{dark_block}
         /* --- Mobile responsiveness --- */
         @media (max-width: 768px) {{
             .stButton>button {{ height: 3.5em; font-size: 1rem; }}
