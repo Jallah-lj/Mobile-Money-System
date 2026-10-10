@@ -260,7 +260,8 @@ class UserManager:
         if not user:
             return False, "User not found"
 
-        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance", "two_factor_enabled"]
+        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance",
+                          "two_factor_enabled", "monthly_budget"]
         updates = []
         params = []
         
@@ -273,6 +274,8 @@ class UserManager:
                 elif key == "sec_a":
                     value = hashlib.sha256(value.lower().strip().encode()).hexdigest()
                 elif key == "balance":
+                    value = str(value)
+                elif key == "monthly_budget":
                     value = str(value)
                 
                 updates.append(f"{key} = ?")

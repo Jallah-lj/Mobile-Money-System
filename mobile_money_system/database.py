@@ -138,6 +138,7 @@ def init_db():
 
         # --- Schema migrations for existing databases ---
         _add_column(cursor, "users", "two_factor_enabled", "INTEGER DEFAULT 1")
+        _add_column(cursor, "users", "monthly_budget", "TEXT DEFAULT '0'")
 
         conn.commit()
 

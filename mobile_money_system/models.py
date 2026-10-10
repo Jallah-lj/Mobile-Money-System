@@ -35,6 +35,9 @@ class User:
     # Security Fields
     two_factor_enabled: bool = True  # OTP required at login / high-value actions
 
+    # Personal finance
+    monthly_budget: Decimal = field(default_factory=lambda: Decimal("0"))  # 0 = no budget set
+
     def to_dict(self):
         return {
             "phone": self.phone,
@@ -50,7 +53,8 @@ class User:
             "is_verified": self.is_verified,
             "status": self.status,
             "risk_tier": self.risk_tier,
-            "two_factor_enabled": self.two_factor_enabled
+            "two_factor_enabled": self.two_factor_enabled,
+            "monthly_budget": str(self.monthly_budget)
         }
 
     def to_public_dict(self):
@@ -79,7 +83,8 @@ class User:
             is_verified=data.get("is_verified", False),
             status=data.get("status", "active"),
             risk_tier=data.get("risk_tier", "standard"),
-            two_factor_enabled=bool(data.get("two_factor_enabled", True))
+            two_factor_enabled=bool(data.get("two_factor_enabled", True)),
+            monthly_budget=Decimal(str(data.get("monthly_budget") or "0"))
         )
 
 @dataclass

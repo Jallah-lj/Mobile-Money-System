@@ -4,7 +4,9 @@ from users import UserManager, HIGH_VALUE_STEPUP_THRESHOLD
 from sessions import SessionManager
 from beneficiaries import BeneficiaryManager
 from scheduled import ScheduledPaymentManager
-from pdfdoc import receipt_pdf
+from analytics import monthly_totals, spending_by_category, top_counterparties, monthly_statement, budget_status
+from pdfdoc import receipt_pdf, build_pdf
+from models import utcnow
 from transactions import TransactionManager, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, BILL_FEE
 from i18n import get_text
 from styles import get_custom_css
@@ -701,8 +703,8 @@ else:
     st.markdown("##### Quick Actions")
 
     # Operations using Option Menu (Styled as Tab Bar)
-    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("scheduled"), TR("settings"), TR("verify_id")]
-    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "calendar-check", "gear", "card-heading"]
+    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("scheduled"), TR("insights"), TR("settings"), TR("verify_id")]
+    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "calendar-check", "graph-up", "gear", "card-heading"]
     # Theme-aware nav colors: the icon must pass AA on the themed container
     # (bright green in dark mode, deep green in light mode).
     nav_icon_color = "#00e676" if st.session_state.get("dark_mode", False) else "#007a1e"
@@ -1325,6 +1327,119 @@ else:
                         if st.button("Cancel", key=f"sp_cancel_{p['id']}", type="primary"):
                             scheduled_manager.cancel(current_user.phone, p['id'])
                             st.rerun()
+
+    elif is_selected("insights"):
+        st.subheader("📊 " + TR("insights"))
+        history = transaction_manager.get_history(current_user.phone)
+        if not history:
+            st.info("No transactions yet — your insights and statements will appear here once you transact.")
+        else:
+            now = utcnow()
+            year, month = now.year, now.month
+
+            # --- Monthly budget ---
+            st.markdown("### Monthly Budget")
+            col_bb1, col_bb2, col_bb3 = st.columns(3)
+            current_budget = float(current_user.monthly_budget or 0)
+            new_budget = col_bb1.number_input("Spending budget (per month)", min_value=0.0,
+                                              value=current_budget, step=50.0, key="budget_input")
+            if new_budget != current_budget and col_bb2.button("Save Budget", key="budget_save"):
+                user_manager.update_user(current_user.phone, monthly_budget=str(new_budget))
+                st.success("Budget saved.")
+                time.sleep(1)
+                st.rerun()
+            bs = budget_status(history, current_user.phone, Decimal(str(current_budget)), year, month)
+            col_bb1.metric("Spent this month", f"${bs['spent']:,.2f}")
+            col_bb2.metric("Budget", f"${current_budget:,.2f}" if current_budget > 0 else "Not set")
+            if current_budget > 0:
+                col_bb3.metric("Remaining", f"${bs['remaining']:,.2f}",
+                               delta=f"{bs['pct']:.0f}% used" if bs['pct'] is not None else None)
+                if bs['pct'] is not None and bs['pct'] >= 100:
+                    st.error("You have exceeded your monthly budget.")
+                elif bs['pct'] is not None and bs['pct'] >= 80:
+                    st.warning("You have used 80%+ of your monthly budget.")
+
+            st.markdown("---")
+            # --- 6-month income vs spending trend ---
+            st.markdown("### Income vs Spending (last 6 months)")
+            totals = monthly_totals(history, current_user.phone, months=6)
+            import pandas as pd
+            trend_df = pd.DataFrame([
+                {"Month": t["month"],
+                 "Income": float(t["income"]),
+                 "Spending": float(t["spending"] + t["fees"])}
+                for t in totals
+            ])
+            st.bar_chart(trend_df.set_index("Month"))
+
+            # --- Category breakdown + top recipients ---
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("### Spending by Category (this month)")
+                cats = spending_by_category(history, current_user.phone, year, month)
+                if cats:
+                    st.bar_chart({k: float(v) for k, v in
+                                  sorted(cats.items(), key=lambda kv: kv[1], reverse=True)})
+                else:
+                    st.info("No spending this month.")
+            with col_c2:
+                st.markdown("### Top Recipients (all time)")
+                top = top_counterparties(history, current_user.phone, n=5)
+                if top:
+                    rows = []
+                    for r in top:
+                        rcpt = user_manager.get_user(r["phone"])
+                        rows.append({"Recipient": rcpt.name if rcpt else r["phone"],
+                                     "Phone": r["phone"],
+                                     "Transfers": r["count"],
+                                     "Total Sent": float(r["amount"])})
+                    st.dataframe(rows, width="stretch")
+                else:
+                    st.info("No outgoing transfers yet.")
+
+            st.markdown("---")
+            # --- Monthly statement ---
+            st.markdown("### Account Statement")
+            available_months = sorted({t.timestamp[:7] for t in history}, reverse=True)
+            month_choice = st.selectbox("Statement month", available_months, key="stmt_month")
+            sy, sm = int(month_choice[:4]), int(month_choice[5:7])
+            stmt = monthly_statement(history, current_user.phone, sy, sm)
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            col_s1.metric("Opening Balance", f"${stmt['opening_balance']:,.2f}")
+            col_s2.metric("Money In", f"${stmt['income']:,.2f}")
+            col_s3.metric("Money Out", f"${(stmt['spending'] + stmt['fees']):,.2f}")
+            col_s4.metric("Closing Balance", f"${stmt['closing_balance']:,.2f}")
+            st.caption(f"{stmt['tx_count']} transaction(s) in {month_choice}")
+            st.dataframe([t.to_dict() for t in stmt["transactions"]], width="stretch")
+
+            stmt_csv = StringIO()
+            if stmt["transactions"]:
+                writer = csv.DictWriter(stmt_csv, fieldnames=list(stmt["transactions"][0].to_dict().keys()))
+                writer.writeheader()
+                for t in stmt["transactions"]:
+                    writer.writerow(t.to_dict())
+            st.download_button("Download Statement (CSV)", data=stmt_csv.getvalue(),
+                               file_name=f"statement_{month_choice}.csv", mime="text/csv", key="stmt_csv")
+
+            stmt_lines = [
+                f"Account: {current_user.name} ({current_user.phone})",
+                f"Period: {month_choice}",
+                f"Opening balance: {current_user.currency} {stmt['opening_balance']:,.2f}",
+                f"Money in:        {current_user.currency} {stmt['income']:,.2f}",
+                f"Money out:       {current_user.currency} {stmt['spending']:,.2f}",
+                f"Fees:            {current_user.currency} {stmt['fees']:,.2f}",
+                f"Closing balance: {current_user.currency} {stmt['closing_balance']:,.2f}",
+                "",
+                "Transactions:",
+            ]
+            for t in stmt["transactions"]:
+                stmt_lines.append(
+                    f"{t.timestamp.replace('T', ' ')[:16]}  {t.type:<14} "
+                    f"{float(t.amount):>10,.2f}  {t.description or ''}  [{t.status}]")
+            st.download_button("Download Statement (PDF)",
+                               data=build_pdf(f"ACCOUNT STATEMENT \u2014 {month_choice}", stmt_lines),
+                               file_name=f"statement_{month_choice}.pdf",
+                               mime="application/pdf", key="stmt_pdf")
 
     elif is_selected("settings"):
         st.subheader(TR("settings"))
