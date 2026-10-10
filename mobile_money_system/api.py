@@ -9,9 +9,13 @@ Security model:
 """
 
 import os
-from typing import Optional
+import threading
+import time
+from collections import defaultdict, deque
+from typing import Deque, Dict, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Body, Header, Query, Security
+from fastapi import FastAPI, HTTPException, Body, Header, Query, Request, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
@@ -27,6 +31,50 @@ except ImportError:
 API_KEY_NAME = "X-API-Key"
 API_KEY_ENV_VAR = "MMS_API_KEY"
 EXPECTED_API_KEY = os.environ.get(API_KEY_ENV_VAR)
+
+
+# --- Rate limiting -----------------------------------------------------------
+# Sliding-window, in-memory limiter. Per-endpoint-class limits protect the API
+# from brute-force and abuse without any external dependencies. (Account-level
+# lockout for logins is additionally enforced by UserManager.)
+class RateLimiter:
+    """Sliding-window rate limiter: at most `max_requests` per `window_seconds`."""
+
+    def __init__(self, max_requests: int, window_seconds: float):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> Tuple[bool, int]:
+        """Record a hit for `key`. Returns (allowed, retry_after_seconds)."""
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits[key]
+            while hits and now - hits[0] > self.window_seconds:
+                hits.popleft()
+            if len(hits) >= self.max_requests:
+                retry_after = int(self.window_seconds - (now - hits[0])) + 1
+                return False, max(retry_after, 1)
+            hits.append(now)
+            return True, 0
+
+    def reset(self, key: str) -> None:
+        with self._lock:
+            self._hits.pop(key, None)
+
+
+# Per-IP limits per endpoint class
+GENERAL_LIMIT = (120, 60)    # 120 requests/minute per client IP
+LOGIN_LIMIT = (10, 60)       # 10 login attempts/minute per client IP
+REGISTER_LIMIT = (20, 60)    # 20 registrations/minute per client IP
+
+_general_limiter = RateLimiter(*GENERAL_LIMIT)
+_login_limiter = RateLimiter(*LOGIN_LIMIT)
+_register_limiter = RateLimiter(*REGISTER_LIMIT)
+
+RATE_LIMIT_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
 
 app = FastAPI(
     title="Mobile Money System API",
@@ -50,6 +98,38 @@ async def verify_api_key(api_key: Optional[str] = Security(api_key_header)):
 
 
 AUTH = Security(verify_api_key)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Reject clients that exceed the per-IP rate limits with HTTP 429."""
+    path = request.url.path
+    if path in RATE_LIMIT_EXEMPT_PATHS or not path.startswith("/"):
+        return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+
+    allowed, retry_after = _general_limiter.allow(f"general:{client_ip}")
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please slow down."},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    endpoint_limiter = None
+    if path == "/users/login":
+        endpoint_limiter = _login_limiter
+    elif path == "/users/register":
+        endpoint_limiter = _register_limiter
+    if endpoint_limiter is not None:
+        allowed, retry_after = endpoint_limiter.allow(f"{path}:{client_ip}")
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many attempts. Try again later."},
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return await call_next(request)
 
 if EXPECTED_API_KEY is None:
     print("WARNING: MMS_API_KEY is not set — the API is running in open development mode.")

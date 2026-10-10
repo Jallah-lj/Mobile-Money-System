@@ -32,6 +32,9 @@ class User:
     status: str = "active" # active, suspended, deleted
     risk_tier: str = "standard" # low, standard, high
 
+    # Security Fields
+    two_factor_enabled: bool = True  # OTP required at login / high-value actions
+
     def to_dict(self):
         return {
             "phone": self.phone,
@@ -46,7 +49,8 @@ class User:
             "id_number": self.id_number,
             "is_verified": self.is_verified,
             "status": self.status,
-            "risk_tier": self.risk_tier
+            "risk_tier": self.risk_tier,
+            "two_factor_enabled": self.two_factor_enabled
         }
 
     def to_public_dict(self):
@@ -74,7 +78,8 @@ class User:
             id_number=data.get("id_number", ""),
             is_verified=data.get("is_verified", False),
             status=data.get("status", "active"),
-            risk_tier=data.get("risk_tier", "standard")
+            risk_tier=data.get("risk_tier", "standard"),
+            two_factor_enabled=bool(data.get("two_factor_enabled", True))
         )
 
 @dataclass

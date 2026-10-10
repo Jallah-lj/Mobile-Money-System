@@ -20,6 +20,11 @@ MAX_LOGIN_ATTEMPTS = 5          # Failed attempts before lockout
 LOCKOUT_WINDOW_SECONDS = 15 * 60  # Only failures inside this window count
 LOCKOUT_DURATION_SECONDS = 15 * 60  # How long the lockout lasts
 
+# --- Step-up authentication -------------------------------------------------
+# Debit transactions above this amount require a fresh OTP even when the user
+# is already logged in (protects against session hijacking of large transfers).
+HIGH_VALUE_STEPUP_THRESHOLD = 1000  # USD
+
 class UserManager:
     def __init__(self):
         # We no longer load all users into memory
@@ -236,12 +241,26 @@ class UserManager:
                   details="Invalid OTP code submitted")
         return False
 
+    def set_two_factor(self, phone: str, enabled: bool) -> Tuple[bool, str]:
+        """Enable/disable OTP-based two-factor authentication for the account."""
+        user = self.get_user(phone)
+        if not user:
+            return False, "User not found"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET two_factor_enabled = ? WHERE phone = ?",
+                           (1 if enabled else 0, phone))
+            conn.commit()
+        log_event(phone, "2FA_ENABLED" if enabled else "2FA_DISABLED", target=phone,
+                  details=f"Two-factor authentication {'enabled' if enabled else 'disabled'} by user")
+        return True, f"Two-factor authentication {'enabled' if enabled else 'disabled'}."
+
     def update_user(self, phone: str, **kwargs) -> Tuple[bool, str]:
         user = self.get_user(phone)
         if not user:
             return False, "User not found"
-        
-        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance"]
+
+        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance", "two_factor_enabled"]
         updates = []
         params = []
         

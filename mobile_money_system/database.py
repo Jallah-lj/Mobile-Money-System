@@ -88,8 +88,23 @@ def init_db():
         )
         ''')
 
+        # Sessions Table (active login sessions — revocable, auditable)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            provider TEXT DEFAULT 'web',
+            user_agent TEXT,
+            ip TEXT,
+            created_at TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            active INTEGER DEFAULT 1
+        )
+        ''')
+
         # --- Schema migrations for existing databases ---
-        
+        _add_column(cursor, "users", "two_factor_enabled", "INTEGER DEFAULT 1")
+
         conn.commit()
 
 if __name__ == "__main__":

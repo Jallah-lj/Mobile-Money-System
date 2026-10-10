@@ -1,6 +1,7 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
-from users import UserManager
+from users import UserManager, HIGH_VALUE_STEPUP_THRESHOLD
+from sessions import SessionManager
 from transactions import TransactionManager, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, BILL_FEE
 from i18n import get_text
 from styles import get_custom_css
@@ -9,6 +10,7 @@ import time
 import re
 import html
 import csv
+from decimal import Decimal
 from io import StringIO
 
 def validate_phone(phone):
@@ -68,11 +70,15 @@ if 'user_manager' not in st.session_state:
 if 'transaction_manager' not in st.session_state:
     st.session_state.transaction_manager = TransactionManager(st.session_state.user_manager)
 
+if 'session_manager' not in st.session_state:
+    st.session_state.session_manager = SessionManager()
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
 user_manager = st.session_state.user_manager
 transaction_manager = st.session_state.transaction_manager
+session_manager = st.session_state.session_manager
 
 # Refresh user object from manager to get latest balance
 current_user = None
@@ -83,6 +89,9 @@ if st.session_state.current_user_phone:
 
 
 def logout_user():
+    if st.session_state.get('session_token'):
+        session_manager.revoke(st.session_state.session_token)
+        del st.session_state.session_token
     st.session_state.current_user_phone = None
     if 'otp_verified' in st.session_state:
         del st.session_state.otp_verified
@@ -96,6 +105,19 @@ if st.session_state.current_user_phone:
         st.session_state.session_expired_notice = True
         logout_user()
     st.session_state.last_activity = time.time()
+
+# --- Server-side session validation: a revoked session ends the login ---
+if st.session_state.current_user_phone:
+    _token = st.session_state.get('session_token')
+    if not _token:
+        # First run after login (or a seeded/test session): create the record
+        _token = session_manager.create_session(st.session_state.current_user_phone)
+        st.session_state.session_token = _token
+    elif not session_manager.is_session_valid(_token, st.session_state.current_user_phone):
+        st.session_state.session_expired_notice = True
+        logout_user()
+    else:
+        session_manager.touch(_token)
 
 # --- Application Layout ---
 
@@ -153,11 +175,17 @@ if not current_user:
                             # Verify Credentials First
                             user = user_manager.login(phone, pin)
                             if user:
-                                # Move to OTP Stage
-                                st.session_state.login_stage = 'otp'
-                                st.session_state.temp_phone = phone
-                                st.session_state.temp_pin = pin # Keep temporarily
-                                st.rerun()
+                                if user.two_factor_enabled:
+                                    # Move to OTP Stage
+                                    st.session_state.login_stage = 'otp'
+                                    st.session_state.temp_phone = phone
+                                    st.session_state.temp_pin = pin # Keep temporarily
+                                    st.rerun()
+                                else:
+                                    # 2FA disabled for this account — log straight in
+                                    st.session_state.current_user_phone = user.phone
+                                    st.session_state.session_token = session_manager.create_session(user.phone)
+                                    st.rerun()
                             else:
                                 st.error("Invalid Phone Number or PIN")
                         else:
@@ -184,8 +212,11 @@ if not current_user:
                 with col_ver:
                     if st.button("Verify"):
                         if user_manager.verify_otp(st.session_state.temp_phone, otp_code):
-                            # Success: Log in
-                            st.session_state.current_user_phone = st.session_state.temp_phone
+                            # Success: Log in (canonical phone + session record)
+                            logged_in_user = user_manager.get_user(st.session_state.temp_phone) \
+                                or user_manager.get_user(user_manager.format_phone(st.session_state.temp_phone))
+                            st.session_state.current_user_phone = logged_in_user.phone if logged_in_user else st.session_state.temp_phone
+                            st.session_state.session_token = session_manager.create_session(st.session_state.current_user_phone)
                             # Cleanup
                             del st.session_state.login_stage
                             del st.session_state.temp_phone
@@ -679,6 +710,30 @@ else:
     def is_selected(key):
         return selected_action == TR(key)
 
+    def stepup_required(amount) -> bool:
+        """True when this debit exceeds the high-value threshold and 2FA is on."""
+        if not current_user.two_factor_enabled:
+            return False
+        try:
+            return Decimal(str(amount)) > HIGH_VALUE_STEPUP_THRESHOLD
+        except Exception:
+            return False
+
+    def render_stepup_challenge():
+        """Render the OTP challenge for a high-value debit."""
+        st.warning("🔐 High-value transaction — extra verification required.")
+        if 'stepup_code' not in st.session_state:
+            code = user_manager.generate_otp(current_user.phone)
+            st.session_state.stepup_code = code
+            st.info(f"Simulation: Your Security Code is **{code}**")
+        otp = st.text_input("Security Code", key="stepup_otp_input")
+        if st.button("Verify Code", key="stepup_verify_btn"):
+            if user_manager.verify_otp(current_user.phone, otp):
+                st.session_state.stepup_verified = True
+                st.rerun()
+            else:
+                st.error("Invalid code.")
+
     # --- RESET Review State on Tab Change ---
     if 'last_selected_action' not in st.session_state:
         st.session_state.last_selected_action = selected_action
@@ -688,6 +743,8 @@ else:
     if st.session_state.last_selected_action != selected_action:
         st.session_state.review_mode = False
         st.session_state.review_data = {}
+        st.session_state.stepup_verified = False
+        st.session_state.pop('stepup_code', None)
         st.session_state.last_selected_action = selected_action
 
     if is_selected("send"):
@@ -761,7 +818,9 @@ else:
                  </div>
                  """, unsafe_allow_html=True)
                  
-                 st.write("") 
+                 st.write("")
+                 if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
+                     render_stepup_challenge()
                  st.write("") 
                  col_btn1, col_btn2 = st.columns(2)
                  with col_btn1:
@@ -771,15 +830,20 @@ else:
                          st.rerun()
                  with col_btn2:
                      if st.button("Confirm Transfer", type="primary", width="stretch"):
-                         success, msg = transaction_manager.transfer(current_user.phone, data['receiver_phone'], data['amount'], data['desc'])
-                         if success:
-                             st.success(f"Success! {msg}")
-                             st.session_state.review_mode = False
-                             st.session_state.review_data = {}
-                             time.sleep(2)
-                             st.rerun()
+                         if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
+                             st.warning("Please complete the verification above first.")
                          else:
-                             st.error(f"Error: {msg}")
+                             success, msg = transaction_manager.transfer(current_user.phone, data['receiver_phone'], data['amount'], data['desc'])
+                             if success:
+                                 st.success(f"Success! {msg}")
+                                 st.session_state.review_mode = False
+                                 st.session_state.review_data = {}
+                                 st.session_state.stepup_verified = False
+                                 st.session_state.pop('stepup_code', None)
+                                 time.sleep(2)
+                                 st.rerun()
+                             else:
+                                 st.error(f"Error: {msg}")
 
     elif is_selected("request"):
         st.subheader(TR("request"))
@@ -1114,6 +1178,8 @@ else:
                  """, unsafe_allow_html=True)
                  
                  st.write("")
+                 if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
+                     render_stepup_challenge()
                  col_btn1, col_btn2 = st.columns(2)
                  with col_btn1:
                      if st.button(TR("cancel"), key="w_can", width="stretch"):
@@ -1121,15 +1187,20 @@ else:
                          st.rerun()
                  with col_btn2:
                      if st.button(f"{TR('confirm')} {TR('withdraw')}", type="primary", width="stretch"):
-                         success, msg = transaction_manager.withdraw(current_user.phone, data['amount'], data['desc'])
-                         if success:
-                             st.success(f"{TR('success')}! {msg}")
-                             st.session_state.review_mode = False
-                             st.session_state.review_data = {}
-                             time.sleep(1)
-                             st.rerun()
+                         if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
+                             st.warning("Please complete the verification above first.")
                          else:
-                             st.error(f"{TR('error')}: {msg}")
+                             success, msg = transaction_manager.withdraw(current_user.phone, data['amount'], data['desc'])
+                             if success:
+                                 st.success(f"{TR('success')}! {msg}")
+                                 st.session_state.review_mode = False
+                                 st.session_state.review_data = {}
+                                 st.session_state.stepup_verified = False
+                                 st.session_state.pop('stepup_code', None)
+                                 time.sleep(1)
+                                 st.rerun()
+                             else:
+                                 st.error(f"{TR('error')}: {msg}")
 
 
     elif is_selected("settings"):
@@ -1176,6 +1247,51 @@ else:
                         st.rerun()
                     else:
                         st.error(f"{TR('error')}: {msg}")
+
+        st.markdown("---")
+        st.markdown("### Security")
+        col_sec1, col_sec2 = st.columns(2)
+        with col_sec1:
+            st.markdown("**Two-Factor Authentication**")
+            st.caption("Require a one-time code at login and for high-value transactions.")
+            tfa_on = st.toggle(
+                "OTP two-factor authentication",
+                value=bool(current_user.two_factor_enabled),
+                key="tfa_toggle",
+            )
+            if tfa_on != bool(current_user.two_factor_enabled):
+                success, msg = user_manager.set_two_factor(current_user.phone, tfa_on)
+                if success:
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with col_sec2:
+            st.markdown("**Active Sessions**")
+            sessions = session_manager.list_active(current_user.phone)
+            st.caption(f"{len(sessions)} active session(s) on your account")
+            for sess in sessions:
+                is_current = sess['token'] == st.session_state.get('session_token')
+                device = sess['user_agent'] or 'unknown device'
+                label = f"{sess['provider']} • {device} • last seen {sess['last_seen'].replace('T', ' ')[:16]}"
+                if is_current:
+                    label += " (this device)"
+                col_slbl, col_sbtn = st.columns([4, 1])
+                with col_slbl:
+                    st.write(label)
+                with col_sbtn:
+                    if not is_current and st.button("Revoke", key=f"revoke_{sess['token'][:8]}"):
+                        session_manager.revoke(sess['token'])
+                        st.success("Session revoked.")
+                        time.sleep(1)
+                        st.rerun()
+            if len(sessions) > 1:
+                if st.button("Log Out Everywhere Else", type="primary"):
+                    n = session_manager.revoke_all(current_user.phone, except_token=st.session_state.get('session_token'))
+                    st.success(f"Revoked {n} other session(s).")
+                    time.sleep(1)
+                    st.rerun()
     
     elif is_selected("verify_id"):
         st.subheader(TR("verify_id"))
