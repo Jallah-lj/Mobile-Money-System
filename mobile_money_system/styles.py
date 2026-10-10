@@ -503,6 +503,25 @@ def get_custom_css(dark: bool = False) -> str:
         .tx-amount.credit {{ color: var(--mms-primary-deep); font-weight: 700; }}
         .tx-amount.debit {{ color: var(--mms-danger); font-weight: 700; }}
 {dark_block}
+
+        /* --- Accessibility --- */
+        /* Respect users who prefer reduced motion: no infinite shimmer/pulse
+           animations and no non-essential transitions (WCAG 2.2.2). */
+        @media (prefers-reduced-motion: reduce) {{
+            *, *::before, *::after {{
+                animation: none !important;
+                transition: none !important;
+            }}
+        }}
+
+        /* Always show a clear, theme-aware focus indicator for keyboard
+           users (WCAG 2.4.7 Focus Visible). */
+        :focus-visible {{
+            outline: 3px solid var(--mms-primary-deep) !important;
+            outline-offset: 2px !important;
+            border-radius: 4px;
+        }}
+
         /* --- Mobile responsiveness --- */
         @media (max-width: 768px) {{
             .stButton>button {{ height: 3.5em; font-size: 1rem; }}

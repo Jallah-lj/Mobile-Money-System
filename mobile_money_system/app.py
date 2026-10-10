@@ -8,6 +8,7 @@ import premium as premium_cfg
 from audit import get_audit_logs
 import time
 import re
+import html
 import csv
 from io import StringIO
 
@@ -112,7 +113,7 @@ st.markdown(f"""
 
 if not current_user:
     # --- Auth View ---
-    st.markdown(f"<h3 style='text-align: center; margin-bottom: 2rem;'>{TR('welcome')}</h3>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='text-align: center; margin-bottom: 2rem;'>{html.escape(TR('welcome'))}</h3>", unsafe_allow_html=True)
     if st.session_state.get('session_expired_notice'):
         st.warning(TR("session_expired"))
         del st.session_state.session_expired_notice
@@ -615,7 +616,7 @@ else:
             st.markdown(f"""
             <div style="text-align: center; margin-bottom: 20px; padding: 10px; background: white; border-radius: 10px;">
                 <p style='font-size: 0.8em; color: var(--mms-muted);'>Scan to Request/Pay</p>
-                <img src="data:image/png;base64,{img_str}" width="150" />
+                <img src="data:image/png;base64,{img_str}" width="150" alt="QR code for {current_user.phone} — scan to pay or request" />
             </div>
             """, unsafe_allow_html=True)
         except ImportError:
@@ -662,7 +663,7 @@ else:
         st.markdown(f"""
         <div class="upsell-banner">
             <strong>⭐ {TR('upgrade_premium')}</strong><br/>
-            <span style="color: var(--mms-muted);">0% transfer fees • half-price withdrawals & bills • 10x limits • loyalty points</span>
+            <span style="color: var(--mms-muted);">0% transfer fees • half-price withdrawals &amp; bills • 10x limits • loyalty points</span>
         </div>
         """, unsafe_allow_html=True)
         if st.button(f"⭐ {TR('upgrade_now')}", key="upsell_btn"):
@@ -1277,7 +1278,7 @@ else:
             <div class="premium-card">
                 <h3>⭐ {TR('upgrade_premium')}</h3>
                 <p>{TR('monthly_fee')}: <strong>${premium_cfg.PREMIUM_MONTHLY_FEE}</strong> / 30 days</p>
-                <p>0% transfer fees • 50% off withdrawal & bill fees • 10x transaction limits • loyalty points on every transaction</p>
+                <p>0% transfer fees • 50% off withdrawal &amp; bill fees • 10x transaction limits • loyalty points on every transaction</p>
             </div>
             """, unsafe_allow_html=True)
             
