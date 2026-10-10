@@ -11,10 +11,14 @@ bcrypt-hashed PINs, KYC, and AML monitoring. The platform is **free to use** —
 
 ### 💰 Core Wallet
 - **Send / Request money** with a two-step verification review screen
+- **Saved beneficiaries** (nicknames + recent recipients) — pay anyone in one tap
+- **Scheduled & recurring payments** — one-off future payments and standing
+  orders (daily / weekly / monthly) for transfers and bills, executed
+  automatically with full run history
 - **Pay bills** (airtime, electricity, water, internet)
 - **Load money** from a linked card & **withdraw** to cash
-- **Inbox** with real-time notifications and per-transaction receipts (downloadable)
-- **Transaction history** with spending analytics
+- **Inbox** with real-time notifications
+- **Transaction history** with **receipts downloadable as text or PDF**
 
 ### 💸 Pricing — free for everyone
 
@@ -31,7 +35,14 @@ Everyone gets the same rates and limits:
 ### 🛡️ Security & Compliance
 - **bcrypt** PIN hashing (with automatic legacy-hash upgrade on login)
 - **Login lockout**: 5 failed attempts → 15-minute lockout
-- **OTP 2FA** on web login (single-use, 5-minute expiry codes)
+- **OTP 2FA** on web login (single-use, 5-minute expiry codes), user-toggleable
+  in Settings
+- **Step-up authentication**: debits above $1,000 require a fresh OTP even
+  when logged in
+- **Server-side session management**: active-sessions list, per-device revoke,
+  and "Log Out Everywhere Else" — a revoked session ends the login immediately
+- **API rate limiting**: per-IP sliding-window limits (general, login,
+  register) with HTTP 429 + Retry-After
 - **Append-only audit log** of every security-relevant event (logins, transfers,
   admin actions, KYC) — viewable in the admin panel and via the API
 - **AML monitoring**: large-amount and velocity (rapid movement) flagging
@@ -40,6 +51,21 @@ Everyone gets the same rates and limits:
 - **Idle session timeout** (15 minutes) in the web app
 - **API key authentication** for the REST API (set `MMS_API_KEY`)
 - API responses never expose PIN hashes or security answers
+
+### 💼 Personal Finance
+- **Insights dashboard**: monthly budget with over-budget alerts, 6-month
+  income-vs-spending trend, spending by category, top recipients
+- **Monthly account statements**: opening/closing balances, money in/out,
+  fees, full transaction list — downloadable as **CSV or PDF**
+
+### 🔌 Integrations
+- **Signed webhooks** (admin-managed): JSON push of every transaction event
+  with HMAC-SHA256 signature headers, retry with backoff, and a delivery log
+- **SMS / email notifications**: per-user channels in Settings; both parties
+  are alerted on transfers/deposits/withdrawals/bills/requests (console
+  provider by default, real SMTP via `MMS_SMTP_*` env vars)
+- **Support ticketing**: users open tickets and see replies; admins work a
+  filtered queue with reply + status flow
 
 ### 🌐 Internationalization & UX
 - UI in **English, Français, Español, Swahili**
@@ -53,6 +79,8 @@ Everyone gets the same rates and limits:
 - **Audit log** viewer with filters and CSV export
 - Revenue analytics with real CSV exports
 - Security center (fraud rule configuration)
+- **Support ticket queue** (filters, reply, status flow)
+- **Webhook management** (endpoints, events, delivery log)
 
 ---
 
@@ -92,8 +120,10 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-27 tests cover the transaction core, compliance (KYC/AML), money requests,
-and security hardening (lockout, OTP, audit trail, fresh-DB bootstrap).
+97 tests cover the transaction core, compliance (KYC/AML), money requests,
+security hardening (lockout, OTP, audit trail, sessions, 2FA, API rate
+limiting), beneficiaries, scheduled payments, analytics & statements, and
+the integrations (webhook signatures & delivery, notifications, tickets).
 CI runs the same suite on every push (`.github/workflows/tests.yml`).
 
 ---
@@ -107,13 +137,21 @@ mobile_money_system/
   main.py           CLI client
   audit.py          Append-only audit log
   transactions.py   Core financial operations (fees, limits, AML)
-  users.py          User management, auth, lockout, KYC
+  users.py          User management, auth, lockout, KYC, 2FA toggle
+  sessions.py       Server-side login session management
+  beneficiaries.py  Saved recipients (nicknames, usage tracking)
+  scheduled.py      Scheduled & recurring payments (standing orders)
+  analytics.py      Personal analytics & monthly statements
+  pdfdoc.py         Dependency-free PDF writer (receipts, statements)
+  webhooks.py       Signed outbound webhooks (HMAC-SHA256, delivery log)
+  notifications.py  SMS/email notification service (pluggable providers)
+  tickets.py        Support ticketing (user tickets + admin queue)
   database.py       SQLite schema + idempotent migrations
   ledger.py         Double-entry bookkeeping (every batch sums to zero)
   models.py         Dataclasses: User, Transaction, LedgerEntry, AuditEntry
   i18n.py           Translations (en / fr / es / sw)
   styles.py         Design system (light & dark themes)
-tests/              pytest suite (27 tests)
+tests/              pytest suite (97 tests)
 set_admin.py        Promote a user to admin (SQLite)
 ```
 

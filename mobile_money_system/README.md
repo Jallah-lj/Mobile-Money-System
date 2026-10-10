@@ -12,7 +12,15 @@ for the full feature overview (free pricing, security, quickstart).
 | `main.py` | CLI client |
 | `audit.py` | Append-only audit log of security-relevant events |
 | `transactions.py` | Financial operations: fees, limits, AML |
-| `users.py` | Auth (bcrypt + lockout + OTP), KYC, user helpers |
+| `users.py` | Auth (bcrypt + lockout + OTP), KYC, user helpers, 2FA toggle |
+| `sessions.py` | Server-side login session management (revoke, log-out-everywhere) |
+| `beneficiaries.py` | Saved recipients with nicknames + recent recipients |
+| `scheduled.py` | Scheduled & recurring payments (standing orders) |
+| `analytics.py` | Personal analytics & monthly account statements |
+| `pdfdoc.py` | Dependency-free PDF writer (receipts, statements) |
+| `webhooks.py` | Signed outbound webhooks (HMAC-SHA256 + delivery log) |
+| `notifications.py` | SMS/email notifications (console + SMTP providers) |
+| `tickets.py` | Support ticketing (user tickets + admin queue) |
 | `database.py` | SQLite schema + idempotent migrations (auto-runs on startup) |
 | `ledger.py` | Double-entry bookkeeping — every posted batch sums to zero |
 | `models.py` | `User`, `Transaction`, `LedgerEntry`, `AuditEntry` dataclasses |
