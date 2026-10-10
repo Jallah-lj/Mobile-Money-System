@@ -39,8 +39,23 @@ class TransactionManager:
         self.user_manager = user_manager
         self.ledger = LedgerManager()
         init_db()  # Ensure schema exists (safe on fresh databases)
-        
+        # Integration hook: callables invoked as listener(event, txn.to_dict())
+        # after every successful money movement. Listeners must never break a
+        # transaction — _emit swallows listener exceptions.
+        self.event_listeners: List = []
+
         # Configuration Limits (None currently active)
+
+    def _emit(self, event: str, txn: Transaction) -> None:
+        """Notify integrations (webhooks, notifications) of a transaction event."""
+        if not self.event_listeners:
+            return
+        payload = txn.to_dict()
+        for listener in list(self.event_listeners):
+            try:
+                listener(event, payload)
+            except Exception:
+                pass  # a broken listener must never fail the transaction
 
     def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
         # Generate a standard reference number (e.g., TXN-12345678-ABCD)
@@ -244,6 +259,7 @@ class TransactionManager:
             user.balance += amount_decimal
             self.user_manager.update_user(phone, balance=user.balance)
             log_event(phone, "DEPOSIT", target=txn.id, details=f"Deposited {amount_decimal}")
+            self._emit("DEPOSIT", txn)
             return True, f"Deposited {amount_decimal} successfully."
         else:
             return False, "Transaction failed: Ledger imbalance."
@@ -308,6 +324,7 @@ class TransactionManager:
             self.user_manager.update_user(phone, balance=user.balance)
             log_event(phone, "WITHDRAWAL", target=txn_wd.id,
                       details=f"Withdrew {amount_decimal} (fee {fee})")
+            self._emit("WITHDRAWAL", txn_wd)
             return True, f"Withdrawn ${amount_decimal}."
         else:
             return False, "Transaction failed."
@@ -387,6 +404,7 @@ class TransactionManager:
                       + (f" - {description}" if description else "")
                       + (" [AML FLAGGED: " + flag_reason + "]" if flagged else ""),
                       status="SUCCESS")
+            self._emit("TRANSFER", txn_tr)
             return True, "Transfer successful"
         else:
             return False, "Transaction failed"
@@ -451,6 +469,7 @@ class TransactionManager:
             self.user_manager.update_user(phone, balance=user.balance)
             log_event(phone, "BILL_PAYMENT", target=txn_bill.id,
                       details=f"{biller_name} {amount_decimal} (fee {fee})")
+            self._emit("BILL_PAYMENT", txn_bill)
             return True, f"Paid {biller_name} successfully."
         else:
             return False, "Transaction Failed"
@@ -478,7 +497,7 @@ class TransactionManager:
             # Let's assume requester wants their currency.
             status="PENDING"
         )
-        
+        self._emit("REQUEST", t)
         return True, "Request sent successfully."
 
     def process_request(self, t_id: str, action: str) -> Tuple[bool, str]: # action = 'PAY' or 'DECLINE'

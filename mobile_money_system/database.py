@@ -136,6 +136,63 @@ def init_db():
         )
         ''')
 
+        # Webhooks Table (outbound event subscriptions for integrations)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS webhooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            events TEXT NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
+        # Webhook Deliveries Table (delivery log: attempts, status, errors)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            webhook_id INTEGER NOT NULL,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status_code INTEGER,
+            attempts INTEGER DEFAULT 0,
+            delivered_at TEXT,
+            error TEXT
+        )
+        ''')
+
+        # Notification Channels Table (per-user SMS/email destinations)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notification_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
+        # Support Tickets Table (user issues -> admin queue)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            category TEXT NOT NULL,
+            message TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            priority TEXT DEFAULT 'normal',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            admin_reply TEXT,
+            replied_at TEXT,
+            replied_by TEXT
+        )
+        ''')
+
         # --- Schema migrations for existing databases ---
         _add_column(cursor, "users", "two_factor_enabled", "INTEGER DEFAULT 1")
         _add_column(cursor, "users", "monthly_budget", "TEXT DEFAULT '0'")

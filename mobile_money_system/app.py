@@ -7,6 +7,9 @@ from scheduled import ScheduledPaymentManager
 from analytics import monthly_totals, spending_by_category, top_counterparties, monthly_statement, budget_status
 from pdfdoc import receipt_pdf, build_pdf
 from models import utcnow
+from webhooks import WebhookManager
+from notifications import NotificationService
+from tickets import TicketManager
 from transactions import TransactionManager, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, BILL_FEE
 from i18n import get_text
 from styles import get_custom_css
@@ -86,6 +89,15 @@ if 'scheduled_manager' not in st.session_state:
     st.session_state.scheduled_manager = ScheduledPaymentManager(
         st.session_state.user_manager, st.session_state.transaction_manager)
 
+if 'webhook_manager' not in st.session_state:
+    st.session_state.webhook_manager = WebhookManager()
+
+if 'notification_service' not in st.session_state:
+    st.session_state.notification_service = NotificationService(st.session_state.user_manager)
+
+if 'ticket_manager' not in st.session_state:
+    st.session_state.ticket_manager = TicketManager()
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
@@ -94,11 +106,33 @@ transaction_manager = st.session_state.transaction_manager
 session_manager = st.session_state.session_manager
 beneficiary_manager = st.session_state.beneficiary_manager
 scheduled_manager = st.session_state.scheduled_manager
+webhook_manager = st.session_state.webhook_manager
+notification_service = st.session_state.notification_service
+ticket_manager = st.session_state.ticket_manager
 
 # --- Scheduler tick: execute due scheduled/standing-order payments ---
 # Rows are claimed atomically before execution, so running this on every app
 # run is safe and can never double-fire a payment.
 scheduled_manager.process_due()
+
+# --- Integration listeners: webhooks + out-of-app notifications ---
+# Wired once per session; listeners must never break a transaction.
+if 'integrations_wired' not in st.session_state:
+    _wm = st.session_state.webhook_manager
+    _ns = st.session_state.notification_service
+
+    def _on_transaction_event(event, payload):
+        try:
+            _wm.dispatch(event, payload)
+        except Exception:
+            pass
+        try:
+            _ns.notify(event, payload)
+        except Exception:
+            pass
+
+    transaction_manager.event_listeners.append(_on_transaction_event)
+    st.session_state.integrations_wired = True
 
 # Refresh user object from manager to get latest balance
 current_user = None
@@ -599,21 +633,101 @@ else:
             
             st.button("Save System Config")
 
+            st.markdown("---")
+            st.markdown("### Webhooks (Event Integrations)")
+            st.caption("Signed (HMAC-SHA256) JSON push of transaction events to external systems.")
+            with st.form("webhook_form"):
+                wh_name = st.text_input("Name", placeholder="e.g. My ERP")
+                wh_url = st.text_input("URL", placeholder="https://example.com/hook")
+                wh_events = st.multiselect("Events", ["TRANSFER", "DEPOSIT", "WITHDRAWAL", "BILL_PAYMENT", "REQUEST"],
+                                           default=["TRANSFER"])
+                wh_secret = st.text_input("Signing Secret (leave blank to auto-generate)", type="password")
+                if st.form_submit_button("Add Webhook"):
+                    ok, msg = webhook_manager.add(wh_name, wh_url, wh_events, wh_secret or None)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            hooks = webhook_manager.list()
+            if hooks:
+                for h in hooks:
+                    col_w1, col_w2, col_w3 = st.columns([3, 3, 1])
+                    with col_w1:
+                        st.write(f"**{h['name']}** — {h['url']}")
+                    with col_w2:
+                        st.caption(f"Events: {h['events']} • {'active' if h['active'] else 'inactive'}")
+                    with col_w3:
+                        if st.button("Delete", key=f"wh_del_{h['id']}"):
+                            webhook_manager.remove(h['id'])
+                            st.rerun()
+                with st.expander("Recent Deliveries"):
+                    deliveries = webhook_manager.recent_deliveries(limit=100)
+                    if deliveries:
+                        st.dataframe([{k: d[k] for k in ("id", "webhook_id", "event", "status_code", "attempts", "delivered_at", "error")} for d in deliveries],
+                                     width="stretch")
+                    else:
+                        st.info("No deliveries yet.")
+            else:
+                st.info("No webhooks registered yet.")
+
         # ---------------- SUPPORT TAB ----------------
         elif selected_adm == "Support":
             st.subheader("🧑‍💼 Agent Support Console")
-            st.info("Ticket System Integration (Mock)")
-            
-            tickets = [
-                {"id": 101, "user": "0987654321", "issue": "Money deducted but not received", "status": "Open"},
-                {"id": 102, "user": "0777123456", "issue": "Forgot PIN", "status": "Resolved"}
-            ]
-            st.table(tickets)
-            
-            with st.expander("Resolve Ticket #101"):
-                st.text_area("Admin Note")
-                st.selectbox("New Status", ["Open", "Pending", "Resolved"])
-                st.button("Update Ticket")
+
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                f_status = st.selectbox("Status", ["All", "open", "in_progress", "resolved", "closed"], key="adm_tk_status")
+            with col_f2:
+                f_cat = st.selectbox("Category", ["All", "payment", "account", "kyc", "security", "other"], key="adm_tk_cat")
+            with col_f3:
+                st.metric("Total Tickets", len(ticket_manager.all_tickets()))
+
+            tickets = ticket_manager.all_tickets(
+                status=None if f_status == "All" else f_status,
+                category=None if f_cat == "All" else f_cat)
+            if not tickets:
+                st.info("No tickets match the filters.")
+            else:
+                st.dataframe([{k: t[k] for k in ("id", "phone", "subject", "category", "status", "priority", "created_at")} for t in tickets],
+                             width="stretch")
+
+                st.markdown("### Work a Ticket")
+                sel_id = st.selectbox("Select Ticket", [t["id"] for t in tickets],
+                                      format_func=lambda i: f"#{i} — {next(t['subject'] for t in tickets if t['id'] == i)}",
+                                      key="adm_tk_sel")
+                tk = ticket_manager.get(sel_id)
+                user = user_manager.get_user(tk["phone"])
+                st.markdown(f"**From:** {user.name if user else 'Unknown'} ({tk['phone']})")
+                st.markdown(f"**Category:** {tk['category']} • **Priority:** {tk['priority']} • **Status:** {tk['status']}")
+                st.markdown(f"**Subject:** {tk['subject']}")
+                st.info(tk["message"])
+                if tk["admin_reply"]:
+                    st.success(f"Last reply ({tk['replied_at'].replace('T', ' ')[:16]} by {tk['replied_by']}): {tk['admin_reply']}")
+                reply_text = st.text_area("Reply to user", key="adm_tk_reply")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    if st.button("Send Reply", type="primary", key="adm_tk_send"):
+                        ok, msg = ticket_manager.reply(tk["id"], current_user.phone, reply_text)
+                        if ok:
+                            st.success(msg)
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                with col_r2:
+                    new_status = st.selectbox("Set Status", ["open", "in_progress", "resolved", "closed"],
+                                              index=["open", "in_progress", "resolved", "closed"].index(tk["status"]),
+                                              key="adm_tk_status_set")
+                    if new_status != tk["status"] and st.button("Update Status", key="adm_tk_upd"):
+                        ok, msg = ticket_manager.set_status(tk["id"], new_status, actor_phone=current_user.phone)
+                        if ok:
+                            st.success(msg)
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
         st.stop()
 
@@ -703,8 +817,8 @@ else:
     st.markdown("##### Quick Actions")
 
     # Operations using Option Menu (Styled as Tab Bar)
-    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("scheduled"), TR("insights"), TR("settings"), TR("verify_id")]
-    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "calendar-check", "graph-up", "gear", "card-heading"]
+    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("scheduled"), TR("insights"), TR("support"), TR("settings"), TR("verify_id")]
+    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "calendar-check", "graph-up", "headset", "gear", "card-heading"]
     # Theme-aware nav colors: the icon must pass AA on the themed container
     # (bright green in dark mode, deep green in light mode).
     nav_icon_color = "#00e676" if st.session_state.get("dark_mode", False) else "#007a1e"
@@ -1441,6 +1555,45 @@ else:
                                file_name=f"statement_{month_choice}.pdf",
                                mime="application/pdf", key="stmt_pdf")
 
+    elif is_selected("support"):
+        st.subheader("🎧 " + TR("support"))
+        st.caption("Having trouble? Open a ticket and our team will get back to you.")
+
+        with st.form("ticket_form"):
+            t_subject = st.text_input("Subject")
+            t_category = st.selectbox("Category", ["payment", "account", "kyc", "security", "other"])
+            t_priority = st.selectbox("Priority", ["low", "normal", "high"], index=1)
+            t_message = st.text_area("Describe your issue")
+            if st.form_submit_button("Submit Ticket", type="primary"):
+                ok, msg = ticket_manager.create(current_user.phone, t_subject, t_category, t_message, t_priority)
+                if ok:
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        st.markdown("---")
+        st.markdown("### My Tickets")
+        my_tickets = ticket_manager.my_tickets(current_user.phone)
+        if not my_tickets:
+            st.info("You have no tickets yet.")
+        else:
+            status_colors = {"open": "var(--mms-danger)", "in_progress": "var(--mms-primary-deep)",
+                             "resolved": "var(--mms-primary-deep)", "closed": "var(--mms-muted)"}
+            for tk in my_tickets:
+                with st.container():
+                    st.markdown(f"""
+                    <div style="border: 1px solid var(--mms-border); padding: 12px; border-radius: 8px; margin-bottom: 8px;">
+                        <div style="font-weight: bold; color: var(--mms-text);">#{tk['id']} — {tk['subject']}</div>
+                        <div style="color: var(--mms-muted); font-size: 0.85em;">{tk['category']} • {tk['priority']} • opened {tk['created_at'].replace('T', ' ')[:16]}</div>
+                        <div style="color: var(--mms-text); margin: 6px 0;">{tk['message']}</div>
+                        <div style="color: {status_colors[tk['status']]}; font-weight: bold; font-size: 0.85em;">STATUS: {tk['status'].upper()}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    if tk["admin_reply"]:
+                        st.info(f"Support reply ({tk['replied_at'].replace('T', ' ')[:16]}): {tk['admin_reply']}")
+
     elif is_selected("settings"):
         st.subheader(TR("settings"))
         
@@ -1530,6 +1683,38 @@ else:
                     st.success(f"Revoked {n} other session(s).")
                     time.sleep(1)
                     st.rerun()
+
+        st.markdown("---")
+        st.markdown("### Notification Channels")
+        st.caption("Get SMS / email alerts for your transactions. (Console delivery in this demo.)")
+        with st.form("notif_form"):
+            n_channel = st.selectbox("Channel", ["sms", "email"])
+            n_dest = st.text_input("Phone number / Email address")
+            if st.form_submit_button("Add Channel"):
+                ok, msg = notification_service.add_channel(current_user.phone, n_channel, n_dest)
+                if ok:
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        channels = notification_service.list_channels(current_user.phone)
+        if channels:
+            for ch in channels:
+                col_n1, col_n2, col_n3 = st.columns([3, 2, 1])
+                with col_n1:
+                    st.write(f"{ch['channel'].upper()}: {ch['destination']}")
+                with col_n2:
+                    enabled = st.toggle("Enabled", value=bool(ch['enabled']), key=f"notif_en_{ch['id']}")
+                    if enabled != bool(ch['enabled']):
+                        notification_service.set_channel_enabled(current_user.phone, ch['id'], enabled)
+                        st.rerun()
+                with col_n3:
+                    if st.button("Remove", key=f"notif_rm_{ch['id']}"):
+                        notification_service.remove_channel(current_user.phone, ch['id'])
+                        st.rerun()
+        else:
+            st.info("No notification channels yet.")
     
     elif is_selected("verify_id"):
         st.subheader(TR("verify_id"))
