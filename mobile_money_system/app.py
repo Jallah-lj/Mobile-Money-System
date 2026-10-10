@@ -2,6 +2,9 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 from users import UserManager, HIGH_VALUE_STEPUP_THRESHOLD
 from sessions import SessionManager
+from beneficiaries import BeneficiaryManager
+from scheduled import ScheduledPaymentManager
+from pdfdoc import receipt_pdf
 from transactions import TransactionManager, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, BILL_FEE
 from i18n import get_text
 from styles import get_custom_css
@@ -10,6 +13,7 @@ import time
 import re
 import html
 import csv
+import datetime
 from decimal import Decimal
 from io import StringIO
 
@@ -73,12 +77,26 @@ if 'transaction_manager' not in st.session_state:
 if 'session_manager' not in st.session_state:
     st.session_state.session_manager = SessionManager()
 
+if 'beneficiary_manager' not in st.session_state:
+    st.session_state.beneficiary_manager = BeneficiaryManager(st.session_state.user_manager)
+
+if 'scheduled_manager' not in st.session_state:
+    st.session_state.scheduled_manager = ScheduledPaymentManager(
+        st.session_state.user_manager, st.session_state.transaction_manager)
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
 user_manager = st.session_state.user_manager
 transaction_manager = st.session_state.transaction_manager
 session_manager = st.session_state.session_manager
+beneficiary_manager = st.session_state.beneficiary_manager
+scheduled_manager = st.session_state.scheduled_manager
+
+# --- Scheduler tick: execute due scheduled/standing-order payments ---
+# Rows are claimed atomically before execution, so running this on every app
+# run is safe and can never double-fire a payment.
+scheduled_manager.process_due()
 
 # Refresh user object from manager to get latest balance
 current_user = None
@@ -683,8 +701,8 @@ else:
     st.markdown("##### Quick Actions")
 
     # Operations using Option Menu (Styled as Tab Bar)
-    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("settings"), TR("verify_id")]
-    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "gear", "card-heading"]
+    nav_options = [TR("send"), TR("request"), TR("pay_bills"), TR("load"), TR("withdraw"), TR("inbox"), TR("history"), TR("scheduled"), TR("settings"), TR("verify_id")]
+    nav_icons = ["send", "arrow-left-circle", "receipt", "credit-card", "arrow-up-circle", "envelope", "clock-history", "calendar-check", "gear", "card-heading"]
     # Theme-aware nav colors: the icon must pass AA on the themed container
     # (bright green in dark mode, deep green in light mode).
     nav_icon_color = "#00e676" if st.session_state.get("dark_mode", False) else "#007a1e"
@@ -750,11 +768,31 @@ else:
     if is_selected("send"):
         if not st.session_state.review_mode:
             st.subheader(TR("send"))
+            # Saved beneficiaries + recent recipients
+            bens = beneficiary_manager.list(current_user.phone)
+            recent = [p for p in beneficiary_manager.recent_recipients(current_user.phone, limit=5)
+                      if p != current_user.phone and all(b['phone'] != p for b in bens)]
+            ben_choices = (["➕ Enter new number"]
+                           + [f"⭐ {b['nickname']} ({b['phone']})" for b in bens]
+                           + [f"🕒 {p}" for p in recent])
+            ben_choice = st.selectbox("Recipient", ben_choices, key="send_ben")
+            save_nickname = ""
             col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                receiver_phone = st.text_input(TR("receiver_phone"), key="send_ph")
-            with col_s2:
-                send_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0, key="send_amt")
+            if ben_choice == "➕ Enter new number":
+                with col_s1:
+                    receiver_phone = st.text_input(TR("receiver_phone"), key="send_ph")
+                with col_s2:
+                    send_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0, key="send_amt")
+                save_as = st.checkbox("Save as beneficiary", key="send_save_as")
+                if save_as:
+                    save_nickname = st.text_input("Nickname for this recipient", key="send_nick")
+            else:
+                receiver_phone = ben_choice.split("(")[-1].rstrip(")")
+                with col_s1:
+                    st.text_input(TR("receiver_phone"), value=receiver_phone, disabled=True, key="send_ph_ro")
+                with col_s2:
+                    send_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0, key="send_amt")
+                st.caption(f"Saved beneficiary — {receiver_phone}")
             
             send_desc = st.text_input(TR("desc"), key="send_desc")
 
@@ -772,6 +810,7 @@ else:
                         st.error("Receiver not found in the system.")
                     else:
                         st.session_state.review_mode = True
+                        st.session_state.send_save_nickname = save_nickname
                         st.session_state.review_data = {
                             "type": "TRANSFER",
                             "receiver_phone": receiver_phone,
@@ -836,6 +875,12 @@ else:
                              success, msg = transaction_manager.transfer(current_user.phone, data['receiver_phone'], data['amount'], data['desc'])
                              if success:
                                  st.success(f"Success! {msg}")
+                                 save_nick = st.session_state.get('send_save_nickname', '')
+                                 if save_nick:
+                                     beneficiary_manager.add(current_user.phone, data['receiver_phone'], save_nick)
+                                     st.session_state.send_save_nickname = ''
+                                 else:
+                                     beneficiary_manager.touch(current_user.phone, data['receiver_phone'])
                                  st.session_state.review_mode = False
                                  st.session_state.review_data = {}
                                  st.session_state.stepup_verified = False
@@ -1203,6 +1248,84 @@ else:
                                  st.error(f"{TR('error')}: {msg}")
 
 
+    elif is_selected("scheduled"):
+        st.subheader("📅 " + TR("scheduled"))
+        st.caption("One-off future payments and recurring standing orders. Due payments execute automatically.")
+
+        with st.form("sched_form"):
+            sp_type = st.selectbox("Payment Type", ["Transfer to user", "Bill payment"])
+            if sp_type == "Transfer to user":
+                bens = beneficiary_manager.list(current_user.phone)
+                choices = ["Enter phone number"] + [f"{b['nickname']} ({b['phone']})" for b in bens]
+                choice = st.selectbox("Recipient", choices, key="sched_recipient")
+                if choice == "Enter phone number":
+                    receiver_phone = st.text_input(TR("receiver_phone"), key="sched_rx")
+                else:
+                    receiver_phone = choice.split("(")[-1].rstrip(")")
+                biller_name = biller_id = ""
+            else:
+                receiver_phone = ""
+                biller_name = st.text_input("Biller / Provider Name")
+                biller_id = st.text_input("Biller Account / ID")
+            sp_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0, key="sched_amt")
+            sp_desc = st.text_input(TR("desc"), key="sched_desc")
+            sp_freq = st.selectbox("Frequency", ["once", "daily", "weekly", "monthly"], key="sched_freq")
+            sp_date = st.date_input("First run date", value=datetime.date.today(), key="sched_date")
+            if st.form_submit_button("Schedule Payment", type="primary"):
+                start_at = datetime.datetime.combine(sp_date, datetime.time.min).isoformat()
+                if sp_type == "Transfer to user":
+                    ok, msg = scheduled_manager.create(
+                        current_user.phone, "TRANSFER", sp_amount, sp_desc,
+                        receiver_phone=receiver_phone, frequency=sp_freq, start_at=start_at)
+                else:
+                    ok, msg = scheduled_manager.create(
+                        current_user.phone, "BILL_PAYMENT", sp_amount, sp_desc,
+                        biller_name=biller_name, biller_id=biller_id,
+                        frequency=sp_freq, start_at=start_at)
+                if ok:
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        st.markdown("---")
+        st.markdown("### Your Scheduled Payments")
+        payments = scheduled_manager.list(current_user.phone)
+        if not payments:
+            st.info("No scheduled payments yet.")
+        else:
+            for p in payments:
+                active = bool(p['active'])
+                state = "Active" if active else "Paused/Cancelled"
+                if p['type'] == "TRANSFER":
+                    target = f"Transfer to {p['receiver_phone']}"
+                else:
+                    target = f"Bill payment — {p['biller_name']} ({p['biller_id']})"
+                with st.container():
+                    st.markdown(f"""
+                    <div style="border: 1px solid var(--mms-border); padding: 12px; border-radius: 8px; margin-bottom: 8px;">
+                        <div style="font-weight: bold; color: var(--mms-text);">{target}</div>
+                        <div style="color: var(--mms-text);">Amount: {current_user.currency} {float(p['amount']):,.2f} &nbsp;•&nbsp; Frequency: {p['frequency']}</div>
+                        <div style="color: var(--mms-muted); font-size: 0.85em;">Next run: {p['next_run_at'].replace('T', ' ')[:16]} &nbsp;•&nbsp; {state}</div>
+                        <div style="color: var(--mms-muted); font-size: 0.85em;">Last: {p['last_status'] or '—'}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if active:
+                            if st.button("Pause", key=f"sp_pause_{p['id']}"):
+                                scheduled_manager.set_active(current_user.phone, p['id'], False)
+                                st.rerun()
+                        else:
+                            if st.button("Resume", key=f"sp_resume_{p['id']}"):
+                                scheduled_manager.set_active(current_user.phone, p['id'], True)
+                                st.rerun()
+                    with col_b:
+                        if st.button("Cancel", key=f"sp_cancel_{p['id']}", type="primary"):
+                            scheduled_manager.cancel(current_user.phone, p['id'])
+                            st.rerun()
+
     elif is_selected("settings"):
         st.subheader(TR("settings"))
         
@@ -1449,6 +1572,13 @@ Status: Successful
                         file_name=f"receipt_{t.id}.txt", 
                         mime="text/plain",
                         key=f"dl_{t.id}"
+                    )
+                    st.download_button(
+                        label="Download Receipt (PDF)",
+                        data=receipt_pdf(t, sender_name, receiver_name),
+                        file_name=f"receipt_{t.id}.pdf",
+                        mime="application/pdf",
+                        key=f"dlpdf_{t.id}"
                     )
 
 

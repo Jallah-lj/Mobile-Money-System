@@ -42,7 +42,10 @@ TRANSLATIONS = {
         "light_mode": "Light Mode",
         "audit_log": "Audit Log",
         "session_expired": "Session expired due to inactivity. Please log in again.",
-        "spending": "Spending"
+        "spending": "Spending",
+        "scheduled": "Scheduled",
+        "insights": "Insights",
+        "support": "Support"
     },
     "fr": {
         "app_title": "Système Mobile Money",
@@ -86,7 +89,10 @@ TRANSLATIONS = {
         "light_mode": "Mode Clair",
         "audit_log": "Journal d'Audit",
         "session_expired": "Session expirée pour inactivité. Veuillez vous reconnecter.",
-        "spending": "Dépenses"
+        "spending": "Dépenses",
+        "scheduled": "Programmés",
+        "insights": "Analyses",
+        "support": "Assistance"
     },
     "es": {
         "app_title": "Sistema de Dinero Móvil",
@@ -130,7 +136,10 @@ TRANSLATIONS = {
         "light_mode": "Modo Claro",
         "audit_log": "Registro de Auditoría",
         "session_expired": "Sesión expirada por inactividad. Inicia sesión de nuevo.",
-        "spending": "Gastos"
+        "spending": "Gastos",
+        "scheduled": "Programados",
+        "insights": "Estadísticas",
+        "support": "Soporte"
     },
     "sw": {
         "app_title": "Mfumo wa Pesa ya Mkononi",
@@ -174,7 +183,10 @@ TRANSLATIONS = {
         "light_mode": "Hali ya Mwanga",
         "audit_log": "Kumbukumbu ya Ukaguzi",
         "session_expired": " kipindi chako kimeisha kwa kutokutumia. Tafadhali ingia tena.",
-        "spending": "Matumizi"
+        "spending": "Matumizi",
+        "scheduled": "Iliyopangwa",
+        "insights": "Takwimu",
+        "support": "Msaada"
     }
 }
 

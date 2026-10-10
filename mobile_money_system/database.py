@@ -102,6 +102,40 @@ def init_db():
         )
         ''')
 
+        # Beneficiaries Table (saved recipients with nicknames)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS beneficiaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_phone TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            nickname TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            UNIQUE(owner_phone, phone)
+        )
+        ''')
+
+        # Scheduled Payments Table (one-off future payments & standing orders)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scheduled_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_phone TEXT NOT NULL,
+            type TEXT NOT NULL,
+            receiver_phone TEXT,
+            biller_name TEXT,
+            biller_id TEXT,
+            amount TEXT NOT NULL,
+            currency TEXT DEFAULT 'USD',
+            description TEXT,
+            frequency TEXT NOT NULL,
+            next_run_at TEXT NOT NULL,
+            last_run_at TEXT,
+            last_status TEXT,
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
         # --- Schema migrations for existing databases ---
         _add_column(cursor, "users", "two_factor_enabled", "INTEGER DEFAULT 1")
 
