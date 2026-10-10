@@ -130,7 +130,7 @@ if not current_user:
             orientation="horizontal",
             styles={
                 "container": {"background-color": "transparent"},
-                "nav-link": {"font-size": "14px"},
+                "nav-link": {"font-size": "14px", "color": "var(--mms-text)"},
                 "nav-link-selected": {"background-color": "#007a1e"},
             }
         )
@@ -301,7 +301,7 @@ else:
             icons=["people", "cash-coin", "receipt", "shield-lock", "clipboard-list", "graph-up", "gear", "headset"],
             default_index=0,
             orientation="horizontal",
-            styles={"nav-link": {"font-size": "14px"}}
+            styles={"nav-link": {"font-size": "14px", "color": "var(--mms-text)"}}
         )
 
         # ---------------- USERS TAB ----------------
@@ -664,9 +664,9 @@ else:
         default_index=0,
         orientation="horizontal",
         styles={
-            "container": {"padding": "0!important", "background-color": "var(--mms-surface)", "border-radius": "10px"},
+            "container": {"padding": "0!important", "background-color": "var(--mms-surface)", "border": "1px solid var(--mms-border)", "border-radius": "10px"},
             "icon": {"color": nav_icon_color, "font-size": "16px"},
-            "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px", "--hover-color": "var(--mms-primary-soft)"},
+            "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px", "color": "var(--mms-text)", "--hover-color": "var(--mms-primary-soft)"},
             "nav-link-selected": {"background-color": "#007a1e"},
         }
     )

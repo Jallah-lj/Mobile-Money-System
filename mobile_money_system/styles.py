@@ -75,12 +75,19 @@ def _dark_mode_overrides() -> str:
             color: var(--mms-text);
         }
 
-        /* Native text sitting directly on the dark canvas:
-           markdown, headings and widget labels. Scoped selectors — they beat
-           Streamlit's emotion classes by specificity but never flatten the
-           semantic colors inside our custom cards. */
+        /* Native text sitting directly on the dark canvas: markdown,
+           headings, captions, alerts, tables, metrics, expanders and widget
+           labels. Scoped selectors — they beat Streamlit's emotion classes
+           by specificity but never flatten the semantic colors inside our
+           custom cards. */
         .block-container [data-testid="stMarkdown"],
         .block-container [data-testid="stHeading"],
+        .block-container [data-testid="stCaption"],
+        .block-container [data-testid="stAlert"],
+        .block-container [data-testid="stTable"],
+        .block-container [data-testid="stDataFrame"],
+        .block-container [data-testid="stMetric"],
+        .block-container [data-testid="stExpander"],
         .block-container label {
             color: var(--mms-text);
         }
@@ -93,9 +100,45 @@ def _dark_mode_overrides() -> str:
     """
 
 
+def _light_mode_overrides() -> str:
+    """Light-mode rules pinning native Streamlit text to the dark token.
+
+    Streamlit's native components can follow the browser's color scheme and
+    render LIGHT text even when our canvas is pinned light — which makes
+    headings, labels, alerts and messages invisible on the white canvas.
+    Pinning the text color to the theme token keeps every native element
+    readable on the light canvas, regardless of the browser's color scheme.
+    """
+    return """
+        /* ===== Light mode: pin native text to the dark token ===== */
+
+        /* Sidebar text on the light sidebar surface */
+        section[data-testid="stSidebar"] * {
+            color: var(--mms-text);
+        }
+
+        /* Native text sitting directly on the light canvas: markdown,
+           headings, captions, alerts, tables, metrics, expanders and widget
+           labels. Scoped selectors — they beat Streamlit's emotion classes
+           by specificity but never flatten the semantic colors inside our
+           custom cards. */
+        .block-container [data-testid="stMarkdown"],
+        .block-container [data-testid="stHeading"],
+        .block-container [data-testid="stCaption"],
+        .block-container [data-testid="stAlert"],
+        .block-container [data-testid="stTable"],
+        .block-container [data-testid="stDataFrame"],
+        .block-container [data-testid="stMetric"],
+        .block-container [data-testid="stExpander"],
+        .block-container label {
+            color: var(--mms-text);
+        }
+    """
+
+
 def get_custom_css(dark: bool = False) -> str:
     t = DARK_TOKENS if dark else LIGHT_TOKENS
-    dark_block = _dark_mode_overrides() if dark else ""
+    theme_block = _dark_mode_overrides() if dark else _light_mode_overrides()
     return f"""
     <style>
         /* Import Google Font */
@@ -427,7 +470,7 @@ def get_custom_css(dark: bool = False) -> str:
         .tx-details {{ flex-grow: 1; color: var(--mms-text); }}
         .tx-amount.credit {{ color: var(--mms-primary-deep); font-weight: 700; }}
         .tx-amount.debit {{ color: var(--mms-danger); font-weight: 700; }}
-{dark_block}
+{theme_block}
 
         /* --- Accessibility --- */
         /* Respect users who prefer reduced motion: no infinite shimmer/pulse
