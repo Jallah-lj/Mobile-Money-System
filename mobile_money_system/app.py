@@ -280,7 +280,7 @@ else:
         if st.sidebar.button(TR("logout"), key="admin_logout", width="stretch"):
             logout_user()
         
-        st.markdown(f"## <i class='fa-solid fa-layer-group'></i> System Administration")
+        st.markdown(f"## <i class='fa-solid fa-layer-group'></i> System Administration", unsafe_allow_html=True)
         
         # Admin Metrics
         col1, col2, col3, col4, col5 = st.columns(5)
