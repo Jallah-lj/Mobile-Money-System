@@ -1,8 +1,8 @@
 """Append-only audit logging for security-relevant system events.
 
-Every login attempt, financial operation, administrative action and
-subscription change is recorded here. Entries are never updated or
-deleted by application code — the log is a compliance trail.
+Every login attempt, financial operation and administrative action is
+recorded here. Entries are never updated or deleted by application
+code — the log is a compliance trail.
 """
 
 import uuid

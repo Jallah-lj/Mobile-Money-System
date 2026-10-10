@@ -3,7 +3,8 @@
 from decimal import Decimal
 
 
-def test_transfer_fee_free_tier(verified_user, second_verified_user):
+def test_transfer_fee_is_zero(verified_user, second_verified_user):
+    """The platform is free to use: 0% transfer fee for everyone."""
     alice, um, tm = verified_user
     bob, _, _ = second_verified_user
 
@@ -13,8 +14,7 @@ def test_transfer_fee_free_tier(verified_user, second_verified_user):
     success, msg = tm.transfer(alice, bob, 100.0, "Fee Test")
     assert success, msg
 
-    fee = Decimal("100") * Decimal("0.01")
-    assert um.get_user(alice).balance == sender_start - Decimal("100") - fee
+    assert um.get_user(alice).balance == sender_start - Decimal("100")
     assert um.get_user(bob).balance == receiver_start + Decimal("100")
 
 
@@ -44,8 +44,8 @@ def test_withdrawal_fee_and_balance(verified_user):
     start = um.get_user(alice).balance
     success, msg = tm.withdraw(alice, 100.0)
     assert success, msg
-    # 1% withdrawal fee for free tier
-    assert um.get_user(alice).balance == start - Decimal("100") - Decimal("1.00")
+    # 0.5% withdrawal fee
+    assert um.get_user(alice).balance == start - Decimal("100") - Decimal("0.50")
 
 
 def test_withdrawal_insufficient_funds(verified_user):
@@ -67,8 +67,8 @@ def test_pay_bill_fee(verified_user):
     start = um.get_user(alice).balance
     success, msg = tm.pay_bill(alice, 50.0, "LEC Power", "MTR-123")
     assert success, msg
-    # Flat $0.50 fee for free tier
-    assert um.get_user(alice).balance == start - Decimal("50.0") - Decimal("0.50")
+    # Flat $0.25 bill payment fee
+    assert um.get_user(alice).balance == start - Decimal("50.0") - Decimal("0.25")
 
 
 def test_ledger_stays_balanced(verified_user, second_verified_user):

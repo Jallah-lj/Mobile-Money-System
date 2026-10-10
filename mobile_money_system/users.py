@@ -10,12 +10,10 @@ try:
     from models import User, utcnow
     from database import get_db, init_db
     from audit import log_event
-    import premium as premium_cfg
 except ImportError:
     from mobile_money_system.models import User, utcnow
     from mobile_money_system.database import get_db, init_db
     from mobile_money_system.audit import log_event
-    from mobile_money_system import premium as premium_cfg
 
 # --- Login protection configuration ---
 MAX_LOGIN_ATTEMPTS = 5          # Failed attempts before lockout
@@ -243,8 +241,7 @@ class UserManager:
         if not user:
             return False, "User not found"
         
-        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance",
-                          "tier", "premium_since", "premium_expires", "loyalty_points"]
+        allowed_fields = ["name", "pin", "sec_q", "sec_a", "status", "risk_tier", "balance"]
         updates = []
         params = []
         
@@ -258,8 +255,6 @@ class UserManager:
                     value = hashlib.sha256(value.lower().strip().encode()).hexdigest()
                 elif key == "balance":
                     value = str(value)
-                elif key == "loyalty_points":
-                    value = int(value)
                 
                 updates.append(f"{key} = ?")
                 params.append(value)
@@ -279,60 +274,6 @@ class UserManager:
     def save_users(self):
         # Legacy placeholder, now handled by individual methods
         pass
-
-    # --- Premium membership helpers ------------------------------------------
-
-    def is_premium(self, phone: str) -> bool:
-        """True if the user currently has an active Premium subscription."""
-        return premium_cfg.is_premium_user(self.get_user(phone))
-
-    def get_fee_schedule(self, phone: str) -> dict:
-        """Current fee schedule / tier summary for a user."""
-        return premium_cfg.fee_schedule(self.get_user(phone))
-
-    def set_premium(self, phone: str, tier: str, since: str, expires: str) -> Tuple[bool, str]:
-        """Set premium tier fields directly (used by subscription/redemption flows)."""
-        user = self.get_user(phone)
-        if not user:
-            return False, "User not found"
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-            UPDATE users SET tier = ?, premium_since = ?, premium_expires = ? WHERE phone = ?
-            ''', (tier, since, expires, phone))
-            conn.commit()
-        return True, "Premium status updated"
-
-    def add_loyalty_points(self, phone: str, points: int) -> Tuple[bool, int]:
-        """Award loyalty points. Returns (success, new_total)."""
-        user = self.get_user(phone)
-        if not user or points < 0:
-            return False, 0
-        new_total = user.loyalty_points + points
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET loyalty_points = ? WHERE phone = ?", (new_total, phone))
-            conn.commit()
-        return True, new_total
-
-    def deduct_loyalty_points(self, phone: str, points: int) -> Tuple[bool, int]:
-        """Deduct loyalty points (e.g. for redemption). Returns (success, new_total)."""
-        user = self.get_user(phone)
-        if not user or points < 0 or user.loyalty_points < points:
-            return False, user.loyalty_points if user else 0
-        new_total = user.loyalty_points - points
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET loyalty_points = ? WHERE phone = ?", (new_total, phone))
-            conn.commit()
-        return True, new_total
-
-    def list_premium_users(self) -> Dict[str, User]:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE tier = 'premium'")
-            rows = cursor.fetchall()
-            return {row['phone']: User.from_dict(dict(row)) for row in rows}
 
     def admin_reset_pin(self, phone: str) -> Tuple[bool, str]:
         new_pin_raw = str(random.randint(1000, 9999))

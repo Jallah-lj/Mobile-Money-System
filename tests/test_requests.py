@@ -20,8 +20,8 @@ def test_request_cycle_pay(verified_user, second_verified_user):
     success, msg = tm.process_request(req_id, "PAY")
     assert success, msg
 
-    # Bob (free tier) pays 50 + 1% fee = 50.50
-    assert um.get_user(bob).balance == Decimal("1000.0") - Decimal("50.5")
+    # Bob pays 50 with 0% transfer fee — the platform is free to use
+    assert um.get_user(bob).balance == Decimal("1000.0") - Decimal("50.0")
     # Alice received exactly 50
     assert um.get_user(alice).balance == alice_before + Decimal("50.0")
 

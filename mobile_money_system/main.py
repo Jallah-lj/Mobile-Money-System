@@ -1,6 +1,5 @@
 from users import UserManager
 from transactions import TransactionManager
-import premium as premium_cfg
 import getpass
 import os
 
@@ -70,10 +69,9 @@ def main():
 def user_session(user, transaction_manager):
     user_manager = transaction_manager.user_manager
     while True:
-        # Refresh user to get latest balance/tier
+        # Refresh user to get latest balance
         user = user_manager.get_user(user.phone)
-        tier_badge = "⭐ PREMIUM" if premium_cfg.is_premium_user(user) else "Free tier"
-        print(f"\n--- User Menu ({user.name}) [{tier_badge}] ---")
+        print(f"\n--- User Menu ({user.name}) ---")
         print("1. Check Balance")
         print("2. Deposit Money")
         print("3. Withdraw Money")
@@ -81,8 +79,7 @@ def user_session(user, transaction_manager):
         print("5. Pay Bill")
         print("6. Inbox / Notifications")
         print("7. Transaction History")
-        print("8. Premium Membership")
-        print("9. Logout")
+        print("8. Logout")
 
         choice = input("Select an option: ")
 
@@ -123,9 +120,9 @@ def user_session(user, transaction_manager):
                     print("Error: Amount must be positive.")
                     continue
                 
-                fee = amount * float(premium_cfg.withdrawal_fee_rate(user))
+                fee = amount * 0.005
                 total = amount + fee
-                fee_label = "0.5% (Premium)" if premium_cfg.is_premium_user(user) else "1%"
+                fee_label = "0.5%"
 
                 print("\n*** VERIFY WITHDRAWAL ***")
                 print(f"Amount:   ${amount:,.2f}")
@@ -160,9 +157,9 @@ def user_session(user, transaction_manager):
                     print("Error: Receiver not found.")
                     continue
 
-                fee = amount * float(premium_cfg.transfer_fee_rate(user))
+                fee = amount * 0.0
                 total = amount + fee
-                fee_label = "0% (Premium)" if premium_cfg.is_premium_user(user) else "1%"
+                fee_label = "0%"
                 
                 print("\n*** VERIFY TRANSFER ***")
                 print(f"To:       {rx_user.name} ({receiver})")
@@ -197,7 +194,7 @@ def user_session(user, transaction_manager):
                     b_id = input("Enter Account/Meter/Phone Number: ")
                     amount = float(input("Enter Amount: "))
                     
-                    fee = 0.50
+                    fee = 0.25
                     total = amount + fee
                     
                     print(f"\n*** VERIFY BILL PAYMENT ***")
@@ -248,63 +245,8 @@ def user_session(user, transaction_manager):
             input("\nPress Enter to continue...")
 
         elif choice == '8':
-            premium_menu(user, transaction_manager)
-
-        elif choice == '9':
             break
 
-
-def premium_menu(user, transaction_manager):
-    """Premium membership screen: status, perks, upgrade, points redemption."""
-    user_manager = transaction_manager.user_manager
-    while True:
-        user = user_manager.get_user(user.phone)
-        is_premium = premium_cfg.is_premium_user(user)
-        print("\n--- ⭐ Premium Membership ---")
-        if is_premium:
-            print(f"Status:   PREMIUM (active until {user.premium_expires[:10]})")
-        else:
-            print("Status:   Free tier")
-        print(f"Loyalty Points: {user.loyalty_points} "
-              f"({premium_cfg.POINTS_FOR_FREE_MONTH} pts = 1 free month)")
-        print(f"Balance:  ${user.balance:,.2f} "
-              f"(monthly fee: ${premium_cfg.PREMIUM_MONTHLY_FEE})")
-        print("\nPremium perks:")
-        print("  • 0% transfer fees (vs 1%)")
-        print("  • 50% off withdrawal fees (0.5% vs 1%)")
-        print("  • 50% off bill payment fees ($0.25 vs $0.50)")
-        print("  • 10x per-transaction limit")
-        print("  • Loyalty points on every transaction")
-        print("\n1. Upgrade / Renew Premium ($4.99 per 30 days)")
-        print(f"2. Redeem {premium_cfg.POINTS_FOR_FREE_MONTH} points for 1 free month")
-        print("3. Back")
-
-        choice = input("Select an option: ")
-        if choice == '1':
-            try:
-                months = int(input("Months (1-12): ") or "1")
-            except ValueError:
-                print("Invalid input.")
-                continue
-            confirm = input(f"Confirm ${premium_cfg.PREMIUM_MONTHLY_FEE * months} for {months} month(s)? (y/n): ")
-            if confirm.lower() == 'y':
-                success, message = transaction_manager.subscribe_premium(user.phone, months)
-                print(f"Result: {message}")
-            else:
-                print("Cancelled.")
-            input("\nPress Enter to continue...")
-        elif choice == '2':
-            confirm = input(f"Redeem {premium_cfg.POINTS_FOR_FREE_MONTH} points for 1 free month? (y/n): ")
-            if confirm.lower() == 'y':
-                success, message = transaction_manager.redeem_points_for_premium(user.phone)
-                print(f"Result: {message}")
-            else:
-                print("Cancelled.")
-            input("\nPress Enter to continue...")
-        elif choice == '3':
-            break
-        else:
-            print("Invalid option.")
 
 if __name__ == "__main__":
     main()

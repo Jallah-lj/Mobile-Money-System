@@ -35,7 +35,7 @@ def verified_user(managers):
     success, msg = user_manager.register(phone, "Alice", "1234", "q", "a")
     assert success, msg
     user_manager.submit_kyc(phone, "passport", "AB1234567")
-    # Fund via admin credit (deposits are subject to per-transaction tier limits)
+    # Fund via admin credit (deposits are subject to the universal per-transaction limits)
     txn_manager.admin_adjust_balance(phone, 10000.0, "test seed")
     return phone, user_manager, txn_manager
 

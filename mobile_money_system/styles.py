@@ -1,4 +1,4 @@
-"""Premium design system for the Mobile Money web app.
+"""Design system for the Mobile Money web app.
 
 `get_custom_css(dark=...)` returns a complete theme stylesheet built from
 design tokens, so the light and dark themes share one source of truth.
@@ -27,9 +27,7 @@ LIGHT_TOKENS = {
     "primary-dark": "#009624",
     "primary-deep": "#007a1e",
     "primary-soft": "#e8f9ee",
-    "gold": "#f5b301",
     "gold-dark": "#b45309",
-    "gold-soft": "#fef3c7",
     "danger": "#cc1843",
     "danger-soft": "#ffe4e9",
     "shadow": "0 10px 30px rgba(15, 23, 42, 0.08)",
@@ -49,9 +47,7 @@ DARK_TOKENS = {
     "primary-dark": "#00c853",
     "primary-deep": "#00e676",
     "primary-soft": "#123524",
-    "gold": "#fbbf24",
     "gold-dark": "#f59e0b",
-    "gold-soft": "#3a2c0a",
     "danger": "#fb7185",
     "danger-soft": "#3f1d2b",
     "shadow": "0 10px 30px rgba(0, 0, 0, 0.45)",
@@ -60,12 +56,9 @@ DARK_TOKENS = {
     "btn-gradient": "linear-gradient(135deg, #008a24 0%, #005c14 100%)",
 }
 
-# Brand gradients (same in both themes). All text-on-gradient pairs are chosen
-# to meet WCAG AA contrast (white on the green wallet card >= 4.5:1, dark
-# brown on the gold premium card >= 7:1).
+# Brand gradient for the wallet card. All text-on-gradient pairs are chosen
+# to meet WCAG AA contrast (white on the green wallet card >= 4.5:1).
 WALLET_GRADIENT = "linear-gradient(135deg, #008a24 0%, #00701a 60%, #005c14 100%)"
-PREMIUM_GRADIENT = "linear-gradient(135deg, #fcd34d 0%, #fbbf24 50%, #f59e0b 100%)"
-PREMIUM_TEXT = "#451a03"  # Dark brown on gold — 7:1 to 10:1 contrast
 
 
 def _tokens_css(t: dict) -> str:
@@ -113,7 +106,6 @@ def get_custom_css(dark: bool = False) -> str:
         :root {{
 {_tokens_css(t)}
             --mms-wallet-gradient: {WALLET_GRADIENT};
-            --mms-premium-gradient: {PREMIUM_GRADIENT};
         }}
 
         /* Page canvas. NOTE: we deliberately do NOT set a global text color on
@@ -153,10 +145,6 @@ def get_custom_css(dark: bool = False) -> str:
         @keyframes shimmer {{
             0% {{ background-position: -200% 0; }}
             100% {{ background-position: 200% 0; }}
-        }}
-        @keyframes pulse-gold {{
-            0%, 100% {{ box-shadow: 0 0 0 0 rgba(245, 179, 1, 0.45); }}
-            50% {{ box-shadow: 0 0 0 12px rgba(245, 179, 1, 0); }}
         }}
 
         .stContainer, .css-1r6slb0, .css-12oz5g7 {{
@@ -202,15 +190,6 @@ def get_custom_css(dark: bool = False) -> str:
             overflow: hidden;
             animation: fadeIn 0.8s ease-out;
         }}
-        .wallet-card.premium {{
-            background: var(--mms-premium-gradient);
-            color: {PREMIUM_TEXT};
-            box-shadow: 0 10px 25px rgba(245, 179, 1, 0.35);
-            animation: fadeIn 0.8s ease-out, pulse-gold 2.5s ease-out 1;
-        }}
-        .wallet-card.premium .balance-value {{
-            text-shadow: none;
-        }}
         .wallet-card::before {{
             content: "";
             position: absolute;
@@ -240,59 +219,6 @@ def get_custom_css(dark: bool = False) -> str:
             align-items: center;
         }}
 
-        /* --- Premium badge & cards --- */
-        .premium-badge {{
-            display: inline-block;
-            background: var(--mms-premium-gradient);
-            color: {PREMIUM_TEXT};
-            font-weight: 700;
-            font-size: 0.72rem;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-            padding: 3px 12px;
-            border-radius: 999px;
-            box-shadow: 0 2px 8px rgba(245, 179, 1, 0.4);
-        }}
-        .premium-card {{
-            background: var(--mms-premium-gradient);
-            color: {PREMIUM_TEXT};
-            padding: 24px;
-            border-radius: 18px;
-            box-shadow: 0 12px 30px rgba(245, 179, 1, 0.35);
-            margin-bottom: 16px;
-            position: relative;
-            overflow: hidden;
-        }}
-        .premium-card::after {{
-            content: "";
-            position: absolute;
-            top: -40%;
-            right: -20%;
-            width: 60%;
-            height: 180%;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
-            animation: shimmer 3.5s infinite;
-            background-size: 200% 100%;
-        }}
-        .premium-card h3, .premium-card p, .premium-card li {{ color: {PREMIUM_TEXT}; }}
-        .upsell-banner {{
-            background: var(--mms-surface);
-            border: 1px solid var(--mms-gold);
-            border-left: 6px solid var(--mms-gold);
-            border-radius: 14px;
-            padding: 18px 22px;
-            box-shadow: var(--mms-shadow-sm);
-            margin-bottom: 18px;
-            color: var(--mms-text);
-        }}
-        .perk-row {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 0;
-            color: var(--mms-text);
-        }}
-        .perk-row i {{ color: var(--mms-gold-dark); width: 20px; text-align: center; }}
         .stat-chip {{
             background: var(--mms-surface);
             border: 1px solid var(--mms-border);
@@ -465,7 +391,6 @@ def get_custom_css(dark: bool = False) -> str:
         .bg-orange {{ background: #FF9100; }}
         .bg-red {{ background: #FF3D00; }}
         .bg-purple {{ background: #651FFF; }}
-        .bg-gold {{ background: var(--mms-premium-gradient); }}
         .action-label {{
             font-size: 0.8rem;
             color: var(--mms-muted);

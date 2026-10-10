@@ -37,7 +37,7 @@ def test_suspended_account_blocked(managers):
 
 def test_aml_flagging_large_amount(managers):
     um, tm = managers
-    _register(um, "+2348011111111", "Sender", risk_tier="high")  # high tier: 50k limit
+    _register(um, "+2348011111111", "Sender", risk_tier="high")  # high tier: $50k base x10 limit
     _register(um, "+2348022222222", "Receiver", risk_tier="high")
     tm.deposit("+2348011111111", 20000.0)
 
@@ -56,7 +56,7 @@ def test_aml_flagging_velocity(managers):
     _register(um, "+2348022222222", "Receiver")
     tm.deposit("+2348011111111", 5000.0)
 
-    # 5 rapid transfers fill the velocity window (each also posts a fee txn)
+    # 5 rapid transfers fill the velocity window (>= 5 txns in 5 minutes)
     for _ in range(5):
         success, _ = tm.transfer("+2348011111111", "+2348022222222", 10.0)
         assert success
@@ -76,6 +76,7 @@ def test_standard_tier_limit_enforced(managers):
     _register(um, "+2348022222222", "Receiver", risk_tier="high")
     um.update_user("+2348011111111", balance=Decimal("100000"))
 
-    success, msg = tm.transfer("+2348011111111", "+2348022222222", 6000.0)
+    # standard risk tier: $5,000 base x 10 = $50,000 universal limit
+    success, msg = tm.transfer("+2348011111111", "+2348022222222", 60000.0)
     assert not success
     assert "limit" in msg.lower()

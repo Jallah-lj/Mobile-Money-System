@@ -19,12 +19,10 @@ try:
     from .users import UserManager
     from .transactions import TransactionManager
     from .audit import get_audit_logs
-    from .database import get_db
 except ImportError:
     from users import UserManager
     from transactions import TransactionManager
     from audit import get_audit_logs
-    from database import get_db
 
 API_KEY_NAME = "X-API-Key"
 API_KEY_ENV_VAR = "MMS_API_KEY"
@@ -32,7 +30,7 @@ EXPECTED_API_KEY = os.environ.get(API_KEY_ENV_VAR)
 
 app = FastAPI(
     title="Mobile Money System API",
-    description="REST API for wallet operations, Premium membership and compliance audit trails.",
+    description="REST API for wallet operations and compliance audit trails.",
     version="2.0.0",
 )
 
@@ -133,33 +131,6 @@ def get_user(phone: str):
     return user.to_public_dict()
 
 
-@app.get("/users/{phone}/subscription", dependencies=[AUTH], tags=["premium"])
-def get_subscription(phone: str):
-    """Premium tier status, expiry, loyalty points and current fee schedule."""
-    status = txn_mgr.get_subscription_status(phone)
-    if not status:
-        raise HTTPException(status_code=404, detail="User not found")
-    return status
-
-
-@app.post("/users/{phone}/premium/subscribe", dependencies=[AUTH], tags=["premium"])
-def subscribe_premium(phone: str, months: int = Query(1, ge=1, le=12)):
-    """Subscribe to Premium (or extend an active subscription) for `months` months."""
-    success, msg = txn_mgr.subscribe_premium(phone, months)
-    if not success:
-        raise HTTPException(status_code=400, detail=msg)
-    return {"message": msg, "subscription": txn_mgr.get_subscription_status(phone)}
-
-
-@app.post("/users/{phone}/premium/redeem", dependencies=[AUTH], tags=["premium"])
-def redeem_premium(phone: str):
-    """Redeem loyalty points for one free month of Premium."""
-    success, msg = txn_mgr.redeem_points_for_premium(phone)
-    if not success:
-        raise HTTPException(status_code=400, detail=msg)
-    return {"message": msg, "subscription": txn_mgr.get_subscription_status(phone)}
-
-
 @app.post("/transactions/deposit", dependencies=[AUTH], tags=["transactions"])
 def deposit(req: TransactionRequest):
     success, msg = txn_mgr.deposit(req.phone, req.amount, req.description)
@@ -204,27 +175,3 @@ def audit_log(limit: int = Query(200, ge=1, le=1000),
               action: Optional[str] = Query(None)):
     """Compliance audit trail, newest first, with optional filters."""
     return [e.to_dict() for e in get_audit_logs(limit=limit, actor_phone=actor, action=action)]
-
-
-@app.get("/admin/premium/stats", dependencies=[AUTH], tags=["admin"])
-def premium_stats():
-    """Premium membership KPIs: subscribers, points outstanding, subscription revenue."""
-    premium_users = user_mgr.list_premium_users()
-    active = {p: u for p, u in premium_users.items() if user_mgr.is_premium(p)}
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM transactions "
-            "WHERE type = 'SUBSCRIPTION' AND receiver_phone = 'SYSTEM_REVENUE'"
-        )
-        sub_revenue = cursor.fetchone()[0]
-        cursor.execute("SELECT COALESCE(SUM(loyalty_points), 0) FROM users")
-        points_outstanding = cursor.fetchone()[0]
-
-    return {
-        "premium_subscribers_total": len(premium_users),
-        "premium_subscribers_active": len(active),
-        "subscription_revenue": round(sub_revenue, 2),
-        "loyalty_points_outstanding": points_outstanding,
-    }

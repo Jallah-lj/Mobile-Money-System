@@ -89,11 +89,6 @@ def init_db():
         ''')
 
         # --- Schema migrations for existing databases ---
-        # Premium membership columns (added after initial release)
-        _add_column(cursor, "users", "tier", "TEXT DEFAULT 'free'")
-        _add_column(cursor, "users", "premium_since", "TEXT DEFAULT ''")
-        _add_column(cursor, "users", "premium_expires", "TEXT DEFAULT ''")
-        _add_column(cursor, "users", "loyalty_points", "INTEGER DEFAULT 0")
         
         conn.commit()
 

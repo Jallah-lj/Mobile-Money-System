@@ -32,12 +32,6 @@ class User:
     status: str = "active" # active, suspended, deleted
     risk_tier: str = "standard" # low, standard, high
 
-    # Premium Membership Fields
-    tier: str = "free"            # free | premium
-    premium_since: str = ""       # ISO timestamp of first upgrade
-    premium_expires: str = ""     # ISO timestamp; empty = no active subscription
-    loyalty_points: int = 0       # Earned by premium members on spend
-
     def to_dict(self):
         return {
             "phone": self.phone,
@@ -52,11 +46,7 @@ class User:
             "id_number": self.id_number,
             "is_verified": self.is_verified,
             "status": self.status,
-            "risk_tier": self.risk_tier,
-            "tier": self.tier,
-            "premium_since": self.premium_since,
-            "premium_expires": self.premium_expires,
-            "loyalty_points": self.loyalty_points
+            "risk_tier": self.risk_tier
         }
 
     def to_public_dict(self):
@@ -84,11 +74,7 @@ class User:
             id_number=data.get("id_number", ""),
             is_verified=data.get("is_verified", False),
             status=data.get("status", "active"),
-            risk_tier=data.get("risk_tier", "standard"),
-            tier=data.get("tier", "free") or "free",
-            premium_since=data.get("premium_since", "") or "",
-            premium_expires=data.get("premium_expires", "") or "",
-            loyalty_points=int(data.get("loyalty_points", 0) or 0)
+            risk_tier=data.get("risk_tier", "standard")
         )
 
 @dataclass
@@ -144,7 +130,7 @@ class AuditEntry:
     id: str
     timestamp: str
     actor_phone: str   # Who performed the action ('SYSTEM' for automated events)
-    action: str        # e.g. LOGIN_SUCCESS, TRANSFER, PREMIUM_UPGRADE
+    action: str        # e.g. LOGIN_SUCCESS, TRANSFER, KYC_SUBMIT
     target: str = ""   # What the action applied to (phone, transaction id, ...)
     details: str = ""
     status: str = "SUCCESS"  # SUCCESS | FAILURE | BLOCKED

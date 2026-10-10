@@ -96,11 +96,11 @@ def test_audit_log_records_transactions(verified_user, second_verified_user):
     assert "audit me" in logs[0].details
 
 
-def test_audit_log_records_premium_events(verified_user):
+def test_audit_log_records_deposits(verified_user):
     alice, um, tm = verified_user
-    tm.subscribe_premium(alice, 1)
+    tm.deposit(alice, 100.0)
 
-    logs = get_audit_logs(limit=50, action="PREMIUM_UPGRADE")
+    logs = get_audit_logs(limit=50, action="DEPOSIT")
     assert len(logs) == 1
     assert logs[0].actor_phone == alice
 
