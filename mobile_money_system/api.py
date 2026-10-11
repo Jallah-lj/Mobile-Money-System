@@ -18,6 +18,7 @@ import time
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query, Request, Security
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -154,6 +155,29 @@ app = FastAPI(
     description="REST API for wallet operations and compliance audit trails.",
     version="2.0.0",
 )
+
+# --- CORS ---------------------------------------------------------------------
+# Native app targets (Android/iOS) are unaffected by CORS; this exists so the
+# Flutter app can also be previewed in a browser (`flutter run -d chrome`).
+# Default: local dev servers on any port. For a deployed web build, set
+# MMS_CORS_ORIGINS="https://app.example.com,https://www.example.com".
+_CORS_ENV = os.environ.get("MMS_CORS_ORIGINS", "")
+if _CORS_ENV:
+    _cors_origins = [o.strip() for o in _CORS_ENV.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Singletons for the app lifecycle
 user_mgr = UserManager()

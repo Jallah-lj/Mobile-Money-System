@@ -351,6 +351,33 @@ def test_tickets_create_list_get(db_path):
     assert r.status_code == 400
 
 
+# --- CORS (browser preview of the Flutter web target) --------------------------------
+
+def test_cors_allows_localhost_preflight(db_path):
+    client, _api = _client()
+    r = client.options("/me/transfer", headers={
+        "Origin": "http://localhost:8080",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
+    })
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:8080"
+
+
+def test_cors_rejects_foreign_origin(db_path):
+    client, _api = _client()
+    # Simple request: still served, but no CORS grant for the foreign origin
+    r = client.get("/health", headers={"Origin": "http://evil.example.com"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers
+    # Preflight from a foreign origin is refused
+    r = client.options("/me/transfer", headers={
+        "Origin": "http://evil.example.com",
+        "Access-Control-Request-Method": "POST",
+    })
+    assert r.status_code == 400
+
+
 # --- KYC + privacy ------------------------------------------------------------------
 
 def test_kyc_and_data_export(db_path):
