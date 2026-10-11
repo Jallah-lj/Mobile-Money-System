@@ -5,7 +5,9 @@ import os
 from mobile_money_system import database
 from mobile_money_system.audit import get_audit_logs
 from mobile_money_system.users import (
-    UserManager, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_SECONDS,
+    LOCKOUT_DURATION_SECONDS,
+    MAX_LOGIN_ATTEMPTS,
+    UserManager,
 )
 
 

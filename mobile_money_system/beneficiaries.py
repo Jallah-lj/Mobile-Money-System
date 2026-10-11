@@ -5,18 +5,18 @@ are scoped per owner; a beneficiary may point at a phone that is not (yet)
 registered — the UI flags whether the recipient is a known user.
 """
 
-from typing import Dict, List, Optional, Tuple
+import builtins
 
 try:
-    from models import utcnow
-    from database import get_db, init_db
-    from users import UserManager
     from audit import log_event
+    from database import get_db, init_db
+    from models import utcnow
+    from users import UserManager
 except ImportError:
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.users import UserManager
     from mobile_money_system.audit import log_event
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
+    from mobile_money_system.users import UserManager
 
 
 class BeneficiaryManager:
@@ -24,7 +24,7 @@ class BeneficiaryManager:
         self.user_manager = user_manager
         init_db()  # Ensure schema exists (safe on fresh databases)
 
-    def add(self, owner_phone: str, phone: str, nickname: str = "") -> Tuple[bool, str]:
+    def add(self, owner_phone: str, phone: str, nickname: str = "") -> tuple[bool, str]:
         """Save a beneficiary. Nickname defaults to the recipient's name or phone."""
         if not self.user_manager.validate_phone(phone):
             return False, "Invalid international phone number format (use +countrycode...)"
@@ -55,7 +55,7 @@ class BeneficiaryManager:
         log_event(owner_phone, "BENEFICIARY_ADDED", target=phone_e164, details=f"nickname={nickname}")
         return True, f"Beneficiary '{nickname}' saved."
 
-    def list(self, owner_phone: str) -> List[Dict]:
+    def list(self, owner_phone: str) -> list[dict]:
         """All beneficiaries of the owner, most recently used first."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -69,7 +69,7 @@ class BeneficiaryManager:
             row["recipient_name"] = recipient.name if recipient else ""
         return rows
 
-    def get(self, owner_phone: str, phone: str) -> Optional[Dict]:
+    def get(self, owner_phone: str, phone: str) -> dict | None:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -90,7 +90,7 @@ class BeneficiaryManager:
             log_event(owner_phone, "BENEFICIARY_REMOVED", target=phone)
         return changed > 0
 
-    def rename(self, owner_phone: str, phone: str, nickname: str) -> Tuple[bool, str]:
+    def rename(self, owner_phone: str, phone: str, nickname: str) -> tuple[bool, str]:
         nickname = (nickname or "").strip()
         if not nickname:
             return False, "Nickname cannot be empty."
@@ -114,7 +114,7 @@ class BeneficiaryManager:
                 (utcnow().isoformat(), owner_phone, phone))
             conn.commit()
 
-    def recent_recipients(self, owner_phone: str, limit: int = 5) -> List[str]:
+    def recent_recipients(self, owner_phone: str, limit: int = 5) -> builtins.list[str]:
         """Phones the owner recently sent money to (from transaction history)."""
         with get_db() as conn:
             cursor = conn.cursor()

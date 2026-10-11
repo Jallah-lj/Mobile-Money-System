@@ -1,7 +1,10 @@
 """Tier 4 integrations: notification channels & providers."""
 
 from mobile_money_system.notifications import (
-    NotificationService, ConsoleProvider, EmailProvider, build_message,
+    ConsoleProvider,
+    EmailProvider,
+    NotificationService,
+    build_message,
 )
 
 

@@ -16,18 +16,17 @@ the same ``send_sms(destination, message)`` interface as ConsoleProvider.
 """
 
 import os
-from typing import Dict, List, Optional, Tuple
 
 try:
-    from models import utcnow
-    from database import get_db, init_db
-    from users import UserManager
     from audit import log_event
+    from database import get_db, init_db
+    from models import utcnow
+    from users import UserManager
 except ImportError:
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.users import UserManager
     from mobile_money_system.audit import log_event
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
+    from mobile_money_system.users import UserManager
 
 CHANNELS = ("sms", "email")
 
@@ -37,12 +36,12 @@ class ConsoleProvider:
 
     name = "console"
 
-    def send_sms(self, destination: str, message: str) -> Tuple[bool, str]:
+    def send_sms(self, destination: str, message: str) -> tuple[bool, str]:
         log_event("NOTIFY", "SMS_SENT", target=destination, details=message[:200])
         print(f"[SMS -> {destination}] {message}")
         return True, "console"
 
-    def send_email(self, destination: str, subject: str, message: str) -> Tuple[bool, str]:
+    def send_email(self, destination: str, subject: str, message: str) -> tuple[bool, str]:
         log_event("NOTIFY", "EMAIL_SENT", target=destination, details=f"{subject}: {message[:200]}")
         print(f"[EMAIL -> {destination}] {subject}\n{message}")
         return True, "console"
@@ -65,7 +64,7 @@ class EmailProvider:
     def configured(self) -> bool:
         return bool(self.host)
 
-    def send_email(self, destination: str, subject: str, message: str) -> Tuple[bool, str]:
+    def send_email(self, destination: str, subject: str, message: str) -> tuple[bool, str]:
         if not self.configured:
             return self._console.send_email(destination, subject, message)
         import smtplib
@@ -87,11 +86,11 @@ class EmailProvider:
             log_event("NOTIFY", "EMAIL_FAILED", target=destination, details=str(e), status="FAILURE")
             return False, str(e)
 
-    def send_sms(self, destination: str, message: str) -> Tuple[bool, str]:
+    def send_sms(self, destination: str, message: str) -> tuple[bool, str]:
         return self._console.send_sms(destination, message)
 
 
-def build_message(event: str, payload: Dict, for_phone: str) -> Optional[Tuple[str, str]]:
+def build_message(event: str, payload: dict, for_phone: str) -> tuple[str, str] | None:
     """Human-readable (subject, body) for a transaction event, or None."""
     amount = f"{payload.get('currency', 'USD')} {float(payload.get('amount', 0)):,.2f}"
     sender, receiver = payload.get("sender_phone", ""), payload.get("receiver_phone", "")
@@ -129,7 +128,7 @@ class NotificationService:
 
     # --- Channel management (user-facing, in Settings) ---
 
-    def add_channel(self, phone: str, channel: str, destination: str) -> Tuple[bool, str]:
+    def add_channel(self, phone: str, channel: str, destination: str) -> tuple[bool, str]:
         channel = (channel or "").lower().strip()
         destination = (destination or "").strip()
         if channel not in CHANNELS:
@@ -153,7 +152,7 @@ class NotificationService:
             conn.commit()
         return True, f"{channel.upper()} notifications enabled for {destination}."
 
-    def list_channels(self, phone: str) -> List[Dict]:
+    def list_channels(self, phone: str) -> list[dict]:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -180,13 +179,14 @@ class NotificationService:
 
     # --- Event delivery ---
 
-    def notify(self, event: str, payload: Dict) -> List[Dict]:
+    def notify(self, event: str, payload: dict) -> list[dict]:
         """Deliver notifications for a transaction event to both parties.
 
         Returns a list of delivery result dicts. Never raises.
         """
         results = []
-        recipients = {payload.get("sender_phone"), payload.get("receiver_phone")} - {None, ""}
+        recipients = {p for p in (payload.get("sender_phone"), payload.get("receiver_phone"))
+                      if isinstance(p, str) and p}
         for phone in recipients:
             user = self.user_manager.get_user(phone)
             if not user:
@@ -211,6 +211,6 @@ class NotificationService:
         return results
 
 
-def notify_event(event: str, payload: Dict, service: NotificationService) -> List[Dict]:
+def notify_event(event: str, payload: dict, service: NotificationService) -> list[dict]:
     """Convenience wrapper used as a TransactionManager event listener."""
     return service.notify(event, payload)

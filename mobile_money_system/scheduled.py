@@ -10,27 +10,27 @@ re-enable it) — this avoids silently retrying payments that will keep
 failing (e.g. insufficient funds). 'once' orders deactivate after firing.
 """
 
+import builtins
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple
 
 try:
-    from models import utcnow
-    from database import get_db, init_db
-    from users import UserManager
-    from transactions import TransactionManager
     from audit import log_event
+    from database import get_db, init_db
+    from models import utcnow
+    from transactions import TransactionManager
+    from users import UserManager
 except ImportError:
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.users import UserManager
-    from mobile_money_system.transactions import TransactionManager
     from mobile_money_system.audit import log_event
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
+    from mobile_money_system.transactions import TransactionManager
+    from mobile_money_system.users import UserManager
 
 FREQUENCIES = ("once", "daily", "weekly", "monthly")
 PAYMENT_TYPES = ("TRANSFER", "BILL_PAYMENT")
 
 
-def _next_run(frequency: str, from_time) -> Optional[str]:
+def _next_run(frequency: str, from_time) -> str | None:
     """ISO timestamp of the next occurrence after `from_time` (naive UTC)."""
     if frequency == "daily":
         return (from_time + timedelta(days=1)).isoformat()
@@ -57,7 +57,7 @@ class ScheduledPaymentManager:
     def create(self, owner_phone: str, p_type: str, amount: float,
                description: str = "", receiver_phone: str = "",
                biller_name: str = "", biller_id: str = "",
-               frequency: str = "once", start_at: Optional[str] = None) -> Tuple[bool, str]:
+               frequency: str = "once", start_at: str | None = None) -> tuple[bool, str]:
         """Create a scheduled payment. Returns (success, message)."""
         owner = self.user_manager.get_user(owner_phone)
         if not owner:
@@ -102,7 +102,7 @@ class ScheduledPaymentManager:
                           + (f" -> {receiver_phone}" if receiver_phone else f" -> {biller_name}"))
         return True, "Scheduled payment created."
 
-    def list(self, owner_phone: str) -> List[Dict]:
+    def list(self, owner_phone: str) -> list[dict]:
         """All scheduled payments of the owner, soonest first."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -111,14 +111,14 @@ class ScheduledPaymentManager:
                 (owner_phone,))
             return [dict(r) for r in cursor.fetchall()]
 
-    def get(self, sp_id: int) -> Optional[Dict]:
+    def get(self, sp_id: int) -> dict | None:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM scheduled_payments WHERE id = ?", (sp_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def cancel(self, owner_phone: str, sp_id: int) -> Tuple[bool, str]:
+    def cancel(self, owner_phone: str, sp_id: int) -> tuple[bool, str]:
         """Cancel (deactivate) a scheduled payment. The record is kept for history."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -132,7 +132,7 @@ class ScheduledPaymentManager:
         log_event(owner_phone, "SCHEDULED_PAYMENT_CANCELLED", target=str(sp_id))
         return True, "Scheduled payment cancelled."
 
-    def set_active(self, owner_phone: str, sp_id: int, active: bool) -> Tuple[bool, str]:
+    def set_active(self, owner_phone: str, sp_id: int, active: bool) -> tuple[bool, str]:
         """Pause (active=False) or resume (active=True) a scheduled payment."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -147,7 +147,7 @@ class ScheduledPaymentManager:
         log_event(owner_phone, "SCHEDULED_PAYMENT_UPDATED", target=str(sp_id), details=action)
         return True, f"Scheduled payment {action}."
 
-    def process_due(self, now=None) -> List[Dict]:
+    def process_due(self, now=None) -> builtins.list[dict]:
         """Execute every active scheduled payment whose next_run_at has passed.
 
         Rows are claimed (last_run_at stamped) inside the same connection before

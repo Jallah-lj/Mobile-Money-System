@@ -6,11 +6,8 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import pytest
-
 from mobile_money_system import webhooks
 from mobile_money_system.webhooks import WebhookManager, sign_payload
-
 
 # --- Signature ---
 
@@ -72,6 +69,7 @@ def test_dispatch_delivers_to_subscribed_active_webhooks(db_path, monkeypatch):
 
     monkeypatch.setattr(webhooks, "_post", fake_post)
     results = wm.dispatch("TRANSFER", _payload())
+    assert len(results) == 2 and all(r["status_code"] == 200 for r in results)
 
     urls = sorted(c[0] for c in calls)
     assert urls == ["https://a.example/hook", "https://b.example/hook"]

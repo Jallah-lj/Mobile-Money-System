@@ -5,8 +5,14 @@ from decimal import Decimal
 import pytest
 
 from mobile_money_system.analytics import (
-    month_bounds, in_month, net_flow, monthly_totals, spending_by_category,
-    top_counterparties, monthly_statement, budget_status,
+    budget_status,
+    in_month,
+    month_bounds,
+    monthly_statement,
+    monthly_totals,
+    net_flow,
+    spending_by_category,
+    top_counterparties,
 )
 from mobile_money_system.models import Transaction, utcnow
 

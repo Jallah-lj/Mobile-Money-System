@@ -7,8 +7,6 @@ top-level ``database`` module's DB_PATH (same pattern as the live-DB AppTests).
 import os
 import sys
 
-import pytest
-
 from streamlit.testing.v1 import AppTest
 
 APP_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mobile_money_system", "app.py"))

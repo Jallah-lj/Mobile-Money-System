@@ -1,6 +1,5 @@
 """Tier 1 security pack: API rate limiting (unit + middleware via TestClient)."""
 
-import pytest
 
 from mobile_money_system.api import RateLimiter
 
@@ -52,6 +51,7 @@ def _ensure_schema():
 def test_login_endpoint_rate_limited(db_path):
     """The 11th login attempt within a minute from one IP gets HTTP 429."""
     from fastapi.testclient import TestClient
+
     import mobile_money_system.api as api_module
     _ensure_schema()
     _clear_limiter_state(api_module)
@@ -65,6 +65,7 @@ def test_login_endpoint_rate_limited(db_path):
 
 def test_health_exempt_from_rate_limit(db_path):
     from fastapi.testclient import TestClient
+
     import mobile_money_system.api as api_module
     _ensure_schema()
     _clear_limiter_state(api_module)
@@ -79,6 +80,7 @@ def test_health_exempt_from_rate_limit(db_path):
 def test_general_rate_limit_applies(db_path):
     """Non-exempt endpoints get 429 after 120 requests/minute from one IP."""
     from fastapi.testclient import TestClient
+
     import mobile_money_system.api as api_module
     _ensure_schema()
     _clear_limiter_state(api_module)

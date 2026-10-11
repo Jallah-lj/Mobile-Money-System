@@ -5,16 +5,15 @@ tab; admins work the queue (filter, reply, change status) from the admin
 Support tab. Every mutation is audit-logged.
 """
 
-from typing import Dict, List, Optional, Tuple
 
 try:
-    from models import utcnow
-    from database import get_db, init_db
     from audit import log_event
+    from database import get_db, init_db
+    from models import utcnow
 except ImportError:
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.database import get_db, init_db
     from mobile_money_system.audit import log_event
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
 
 TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
 TICKET_CATEGORIES = ("payment", "account", "kyc", "security", "other")
@@ -26,7 +25,7 @@ class TicketManager:
         init_db()  # Ensure schema exists (safe on fresh databases)
 
     def create(self, phone: str, subject: str, category: str, message: str,
-               priority: str = "normal") -> Tuple[bool, str]:
+               priority: str = "normal") -> tuple[bool, str]:
         """Open a new support ticket. Returns (success, message)."""
         subject = (subject or "").strip()
         message = (message or "").strip()
@@ -51,14 +50,14 @@ class TicketManager:
                   details=f"[{category}/{priority}] {subject}")
         return True, f"Ticket #{ticket_id} opened. Our team will reply soon."
 
-    def get(self, ticket_id: int) -> Optional[Dict]:
+    def get(self, ticket_id: int) -> dict | None:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def my_tickets(self, phone: str) -> List[Dict]:
+    def my_tickets(self, phone: str) -> list[dict]:
         """A user's own tickets, newest first."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -66,8 +65,8 @@ class TicketManager:
                 "SELECT * FROM tickets WHERE phone = ? ORDER BY updated_at DESC", (phone,))
             return [dict(r) for r in cursor.fetchall()]
 
-    def all_tickets(self, status: Optional[str] = None,
-                    category: Optional[str] = None) -> List[Dict]:
+    def all_tickets(self, status: str | None = None,
+                    category: str | None = None) -> list[dict]:
         """Admin queue, newest first, with optional filters."""
         query = "SELECT * FROM tickets"
         clauses, params = [], []
@@ -85,7 +84,7 @@ class TicketManager:
             cursor.execute(query, params)
             return [dict(r) for r in cursor.fetchall()]
 
-    def reply(self, ticket_id: int, admin_phone: str, message: str) -> Tuple[bool, str]:
+    def reply(self, ticket_id: int, admin_phone: str, message: str) -> tuple[bool, str]:
         """Admin reply — visible to the user; moves the ticket to in_progress."""
         message = (message or "").strip()
         if not message:
@@ -107,7 +106,7 @@ class TicketManager:
         log_event(admin_phone, "TICKET_REPLIED", target=str(ticket_id), details=message[:200])
         return True, "Reply sent to the user."
 
-    def set_status(self, ticket_id: int, status: str, actor_phone: str = "ADMIN") -> Tuple[bool, str]:
+    def set_status(self, ticket_id: int, status: str, actor_phone: str = "ADMIN") -> tuple[bool, str]:
         status = (status or "").strip().lower()
         if status not in TICKET_STATUSES:
             return False, f"Status must be one of {TICKET_STATUSES}"

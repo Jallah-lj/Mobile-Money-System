@@ -1,8 +1,9 @@
-import sqlite3
 import os
+import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = "mobile_money.db"
+# The SQLite file location can be overridden (e.g. a Docker volume mount).
+DB_PATH = os.environ.get("MMS_DB_PATH", "mobile_money.db")
 
 @contextmanager
 def get_db():
@@ -25,7 +26,7 @@ def _add_column(cursor, table: str, column: str, definition: str):
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Users Table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -44,7 +45,7 @@ def init_db():
             risk_tier TEXT DEFAULT 'standard'
         )
         ''')
-        
+
         # Transactions Table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
@@ -61,7 +62,7 @@ def init_db():
             flag_reason TEXT
         )
         ''')
-        
+
         # Ledger Table
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS ledger (
@@ -190,6 +191,20 @@ def init_db():
             admin_reply TEXT,
             replied_at TEXT,
             replied_by TEXT
+        )
+        ''')
+
+        # Account Deletion Requests (GDPR-style: user request -> admin approval)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS account_deletions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            reason TEXT,
+            status TEXT DEFAULT 'pending',
+            requested_at TEXT NOT NULL,
+            reviewed_by TEXT,
+            reviewed_at TEXT,
+            review_note TEXT
         )
         ''')
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Optional
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
+
 
 def utcnow() -> datetime:
     """Timezone-aware UTC now, returned as naive UTC for consistent DB storage.
@@ -10,7 +10,7 @@ def utcnow() -> datetime:
     same ISO format already stored in the database (naive UTC), so existing
     rows remain string-comparable with new ones.
     """
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 @dataclass
 class User:
@@ -22,12 +22,12 @@ class User:
     role: str = "user"
     sec_q: str = ""
     sec_a: str = ""
-    
+
     # KYC Fields
     id_type: str = "" # passport, national_id
-    id_number: str = "" 
+    id_number: str = ""
     is_verified: bool = False
-    
+
     # Status Fields
     status: str = "active" # active, suspended, deleted
     risk_tier: str = "standard" # low, standard, high
@@ -98,7 +98,7 @@ class Transaction:
     timestamp: str = field(default_factory=lambda: utcnow().isoformat())
     description: str = ""
     status: str = "COMPLETED"
-    
+
     # AML Fields
     flagged: bool = False
     flag_reason: str = ""
@@ -117,7 +117,7 @@ class Transaction:
             "flagged": self.flagged,
             "flag_reason": self.flag_reason
         }
-    
+
     @staticmethod
     def from_dict(data: dict) -> 'Transaction':
         return Transaction(

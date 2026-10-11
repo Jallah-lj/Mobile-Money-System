@@ -4,7 +4,7 @@ import time
 
 from mobile_money_system import database
 from mobile_money_system.sessions import SessionManager
-from mobile_money_system.users import UserManager, HIGH_VALUE_STEPUP_THRESHOLD
+from mobile_money_system.users import HIGH_VALUE_STEPUP_THRESHOLD, UserManager
 
 
 def test_session_lifecycle(db_path):

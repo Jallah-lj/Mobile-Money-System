@@ -12,21 +12,23 @@ import os
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Deque, Dict, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Body, Header, Query, Request, Security
+from fastapi import FastAPI, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 try:
-    from .users import UserManager
-    from .transactions import TransactionManager
     from .audit import get_audit_logs
+    from .privacy import PrivacyManager
+    from .transactions import TransactionManager
+    from .users import UserManager
 except ImportError:
-    from users import UserManager
-    from transactions import TransactionManager
-    from audit import get_audit_logs
+    # Dual import path: this module is also runnable as a top-level script module.
+    from audit import get_audit_logs  # type: ignore[no-redef]
+    from privacy import PrivacyManager  # type: ignore[no-redef]
+    from transactions import TransactionManager  # type: ignore[no-redef]
+    from users import UserManager  # type: ignore[no-redef]
 
 API_KEY_NAME = "X-API-Key"
 API_KEY_ENV_VAR = "MMS_API_KEY"
@@ -43,10 +45,10 @@ class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: float):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def allow(self, key: str) -> Tuple[bool, int]:
+    def allow(self, key: str) -> tuple[bool, int]:
         """Record a hit for `key`. Returns (allowed, retry_after_seconds)."""
         now = time.monotonic()
         with self._lock:
@@ -85,11 +87,12 @@ app = FastAPI(
 # Singletons for the app lifecycle
 user_mgr = UserManager()
 txn_mgr = TransactionManager(user_mgr)
+privacy_mgr = PrivacyManager()
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
-async def verify_api_key(api_key: Optional[str] = Security(api_key_header)):
+async def verify_api_key(api_key: str | None = Security(api_key_header)):
     """Enforce API key auth when MMS_API_KEY is configured."""
     if EXPECTED_API_KEY is None:
         return  # Development mode (a warning is printed at startup)
@@ -249,9 +252,18 @@ def get_history(phone: str):
     return [t.to_dict() for t in txns]
 
 
+@app.get("/users/{phone}/data-export", dependencies=[AUTH], tags=["users"])
+def export_user_data(phone: str):
+    """Privacy data export: everything the platform holds about the user."""
+    data = privacy_mgr.export_user_data(phone)
+    if data is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return data
+
+
 @app.get("/admin/audit", dependencies=[AUTH], tags=["admin"])
 def audit_log(limit: int = Query(200, ge=1, le=1000),
-              actor: Optional[str] = Query(None),
-              action: Optional[str] = Query(None)):
+              actor: str | None = Query(None),
+              action: str | None = Query(None)):
     """Compliance audit trail, newest first, with optional filters."""
     return [e.to_dict() for e in get_audit_logs(limit=limit, actor_phone=actor, action=action)]

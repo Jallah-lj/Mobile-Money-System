@@ -8,14 +8,13 @@ purely client-side logout leaves open.
 """
 
 import uuid
-from typing import Dict, List, Optional
 
 try:
-    from models import utcnow
     from database import get_db, init_db
+    from models import utcnow
 except ImportError:
-    from mobile_money_system.models import utcnow
     from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
 
 
 class SessionManager:
@@ -36,7 +35,7 @@ class SessionManager:
             conn.commit()
         return token
 
-    def get_session(self, token: str) -> Optional[Dict]:
+    def get_session(self, token: str) -> dict | None:
         """Return the session row, or None if the token is unknown."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -66,7 +65,7 @@ class SessionManager:
             conn.commit()
             return changed > 0
 
-    def revoke_all(self, phone: str, except_token: Optional[str] = None) -> int:
+    def revoke_all(self, phone: str, except_token: str | None = None) -> int:
         """Revoke every active session of the user (optionally keeping one)."""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -81,7 +80,7 @@ class SessionManager:
             conn.commit()
             return changed
 
-    def list_active(self, phone: str) -> List[Dict]:
+    def list_active(self, phone: str) -> list[dict]:
         """All active sessions for a user, most recently seen first."""
         with get_db() as conn:
             cursor = conn.cursor()

@@ -6,14 +6,13 @@ code — the log is a compliance trail.
 """
 
 import uuid
-from typing import List, Optional
 
 try:
-    from models import AuditEntry, utcnow
     from database import get_db
+    from models import AuditEntry, utcnow
 except ImportError:
-    from mobile_money_system.models import AuditEntry, utcnow
     from mobile_money_system.database import get_db
+    from mobile_money_system.models import AuditEntry, utcnow
 
 
 def log_event(actor_phone: str, action: str, target: str = "",
@@ -43,11 +42,12 @@ def log_event(actor_phone: str, action: str, target: str = "",
     return entry
 
 
-def get_audit_logs(limit: int = 200, actor_phone: Optional[str] = None,
-                   action: Optional[str] = None) -> List[AuditEntry]:
+def get_audit_logs(limit: int = 200, actor_phone: str | None = None,
+                   action: str | None = None) -> list[AuditEntry]:
     """Retrieve audit entries, newest first, with optional filters."""
     query = "SELECT * FROM audit_log"
-    clauses, params = [], []
+    clauses: list[str] = []
+    params: list = []  # mixes str filters and the int LIMIT
     if actor_phone:
         clauses.append("actor_phone = ?")
         params.append(actor_phone)

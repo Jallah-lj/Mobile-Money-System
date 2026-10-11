@@ -1,14 +1,13 @@
-import uuid
 import time
+import uuid
 from decimal import Decimal
-from typing import List, Dict, Optional
 
 try:
-    from models import LedgerEntry, utcnow
     from database import get_db
+    from models import LedgerEntry, utcnow
 except ImportError:
-    from mobile_money_system.models import LedgerEntry, utcnow
     from mobile_money_system.database import get_db
+    from mobile_money_system.models import LedgerEntry, utcnow
 
 class LedgerManager:
     """
@@ -19,17 +18,17 @@ class LedgerManager:
         # We no longer use ledger_file, everything in main SQLite
         pass
 
-    def post_entries(self, entries: List[LedgerEntry]) -> bool:
+    def post_entries(self, entries: list[LedgerEntry]) -> bool:
         """
         Validates and posts a batch of entries.
         The sum of amounts in the batch MUST be zero.
         """
         total = sum((e.amount for e in entries), Decimal("0.0"))
-        
+
         if total != Decimal("0.0"):
             print(f"Ledger Error: Unbalanced transaction. Sum: {total}")
             return False
-            
+
         with get_db() as conn:
             cursor = conn.cursor()
             for e in entries:
@@ -44,7 +43,7 @@ class LedgerManager:
         timestamp_part = int(time.time())
         random_part = str(uuid.uuid4())[:8].upper()
         entry_id = f"LEG-{timestamp_part}-{random_part}"
-        
+
         return LedgerEntry(
             id=entry_id,
             transaction_id=transaction_id,

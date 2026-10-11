@@ -1,7 +1,11 @@
-streamlit
-streamlit-option-menu
-qrcode
-fastapi
-uvicorn
-bcrypt
-phonenumbers
+# Application dependencies — pinned for reproducible installs.
+# Regenerate with: .venv/bin/pip freeze | grep -E "^(...)=="
+streamlit==1.65.0
+streamlit-option-menu==0.4.0
+qrcode==8.2
+pillow==12.3.0
+pandas==3.0.6
+fastapi==0.143.0
+uvicorn==0.54.0
+bcrypt==5.0.0
+phonenumbers==9.0.41

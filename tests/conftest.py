@@ -20,8 +20,8 @@ def db_path(tmp_path, monkeypatch):
 @pytest.fixture()
 def managers(db_path):
     """A fresh UserManager + TransactionManager backed by the temp database."""
-    from mobile_money_system.users import UserManager
     from mobile_money_system.transactions import TransactionManager
+    from mobile_money_system.users import UserManager
     user_manager = UserManager()
     txn_manager = TransactionManager(user_manager)
     return user_manager, txn_manager

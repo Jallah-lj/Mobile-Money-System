@@ -1,14 +1,14 @@
 """Tier 2: dependency-free PDF writer produces valid, parseable PDFs."""
 
+from decimal import Decimal
+from io import BytesIO
+
 import pytest
 
-from mobile_money_system.pdfdoc import build_pdf, receipt_pdf
 from mobile_money_system.models import Transaction
-from decimal import Decimal
+from mobile_money_system.pdfdoc import build_pdf, receipt_pdf
 
 pypdf = pytest.importorskip("pypdf")
-
-from io import BytesIO
 
 
 def test_pdf_structure_and_text_extraction():

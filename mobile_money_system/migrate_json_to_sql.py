@@ -1,8 +1,9 @@
 import json
 import os
 import sqlite3
-from decimal import Decimal
+
 from database import DB_PATH, init_db
+
 
 def migrate():
     init_db()
@@ -11,7 +12,7 @@ def migrate():
 
     # 1. Migrate Users
     if os.path.exists("users.json"):
-        with open("users.json", "r") as f:
+        with open("users.json") as f:
             users_data = json.load(f)
             for phone, u in users_data.items():
                 cursor.execute('''
@@ -36,7 +37,7 @@ def migrate():
 
     # 2. Migrate Transactions
     if os.path.exists("transactions.json"):
-        with open("transactions.json", "r") as f:
+        with open("transactions.json") as f:
             txns_data = json.load(f)
             for t in txns_data:
                 cursor.execute('''
@@ -59,19 +60,19 @@ def migrate():
 
     # 3. Migrate Ledger
     if os.path.exists("ledger.json"):
-        with open("ledger.json", "r") as f:
+        with open("ledger.json") as f:
             ledger_data = json.load(f)
-            for l in ledger_data:
+            for entry in ledger_data:
                 cursor.execute('''
                 INSERT OR REPLACE INTO ledger (id, transaction_id, account_id, amount, timestamp, description)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
-                    l.get("id"),
-                    l.get("transaction_id"),
-                    l.get("account_id"),
-                    l.get("amount"),
-                    l.get("timestamp"),
-                    l.get("description", "")
+                    entry.get("id"),
+                    entry.get("transaction_id"),
+                    entry.get("account_id"),
+                    entry.get("amount"),
+                    entry.get("timestamp"),
+                    entry.get("description", "")
                 ))
         print("Migrated Ledger.")
 

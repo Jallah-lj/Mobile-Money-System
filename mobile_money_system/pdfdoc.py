@@ -5,7 +5,7 @@ plain text lines — used for transaction receipts and account statements
 without pulling in a heavy PDF library.
 """
 
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 PAGE_WIDTH = 595   # A4 in points
 PAGE_HEIGHT = 842
@@ -25,7 +25,7 @@ def _escape(text: str) -> str:
             .replace("\n", " "))
 
 
-def _paginate(lines: List[str]) -> List[List[str]]:
+def _paginate(lines: list[str]) -> list[list[str]]:
     pages = [lines[i:i + LINES_PER_PAGE] for i in range(0, len(lines), LINES_PER_PAGE)]
     return pages or [[]]
 
@@ -35,7 +35,7 @@ def build_pdf(title: str, lines: Iterable[str], font_size: int = 10, leading: in
     body = [_escape(line) for line in lines]
     pages = _paginate(body)
 
-    objects: List[bytes] = []  # index + 1 == object number
+    objects: list[bytes] = []  # index + 1 == object number
 
     def add(obj: bytes) -> int:
         objects.append(obj)

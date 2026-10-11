@@ -1,26 +1,30 @@
-import streamlit as st
-from streamlit_option_menu import option_menu
-from users import UserManager, HIGH_VALUE_STEPUP_THRESHOLD
-from sessions import SessionManager
-from beneficiaries import BeneficiaryManager
-from scheduled import ScheduledPaymentManager
-from analytics import monthly_totals, spending_by_category, top_counterparties, monthly_statement, budget_status
-from pdfdoc import receipt_pdf, build_pdf
-from models import utcnow
-from webhooks import WebhookManager
-from notifications import NotificationService
-from tickets import TicketManager
-from transactions import TransactionManager, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, BILL_FEE
-from i18n import get_text
-from styles import get_custom_css
-from audit import get_audit_logs
-import time
-import re
-import html
+import contextlib
 import csv
 import datetime
+import html
+import re
+import time
 from decimal import Decimal
 from io import StringIO
+
+import streamlit as st
+from analytics import budget_status, monthly_statement, monthly_totals, spending_by_category, top_counterparties
+from audit import get_audit_logs
+from beneficiaries import BeneficiaryManager
+from i18n import get_text
+from models import utcnow
+from notifications import NotificationService
+from pdfdoc import build_pdf, receipt_pdf
+from privacy import PrivacyManager, export_to_csv
+from scheduled import ScheduledPaymentManager
+from sessions import SessionManager
+from streamlit_option_menu import option_menu
+from styles import get_custom_css
+from tickets import TicketManager
+from transactions import BILL_FEE, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, TransactionManager
+from users import HIGH_VALUE_STEPUP_THRESHOLD, UserManager
+from webhooks import WebhookManager
+
 
 def validate_phone(phone):
     # Allow optional '+', and 7-15 digits for global compatibility
@@ -28,7 +32,7 @@ def validate_phone(phone):
 
 # --- Configuration & Styles ---
 st.set_page_config(
-    page_title="Mobile Money System", 
+    page_title="Mobile Money System",
     page_icon="💳",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,8 +55,8 @@ def TR(key):
 # Sidebar Language Selector
 with st.sidebar:
     lang_choice = st.selectbox(
-        "🌐 Language / Langue / Idioma / Lugha", 
-        ["English", "Français", "Español", "Swahili"], 
+        "🌐 Language / Langue / Idioma / Lugha",
+        ["English", "Français", "Español", "Swahili"],
         index=["en", "fr", "es", "sw"].index(st.session_state.language)
     )
     if lang_choice == "English":
@@ -63,7 +67,7 @@ with st.sidebar:
         st.session_state.language = "es"
     elif lang_choice == "Swahili":
         st.session_state.language = "sw"
-    
+
     st.markdown("---")
     dark = st.toggle(TR("dark_mode"), value=st.session_state.dark_mode, key="dark_mode_toggle")
     if dark != st.session_state.dark_mode:
@@ -98,6 +102,9 @@ if 'notification_service' not in st.session_state:
 if 'ticket_manager' not in st.session_state:
     st.session_state.ticket_manager = TicketManager()
 
+if 'privacy_manager' not in st.session_state:
+    st.session_state.privacy_manager = PrivacyManager()
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
@@ -109,6 +116,7 @@ scheduled_manager = st.session_state.scheduled_manager
 webhook_manager = st.session_state.webhook_manager
 notification_service = st.session_state.notification_service
 ticket_manager = st.session_state.ticket_manager
+privacy_manager = st.session_state.privacy_manager
 
 # --- Scheduler tick: execute due scheduled/standing-order payments ---
 # Rows are claimed atomically before execution, so running this on every app
@@ -122,14 +130,10 @@ if 'integrations_wired' not in st.session_state:
     _ns = st.session_state.notification_service
 
     def _on_transaction_event(event, payload):
-        try:
+        with contextlib.suppress(Exception):
             _wm.dispatch(event, payload)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             _ns.notify(event, payload)
-        except Exception:
-            pass
 
     transaction_manager.event_listeners.append(_on_transaction_event)
     st.session_state.integrations_wired = True
@@ -193,13 +197,14 @@ if not current_user:
         st.warning(TR("session_expired"))
         del st.session_state.session_expired_notice
     st.markdown("---")
-    
+
     col1, col2, col3 = st.columns([1, 2, 1])
-    
+
     with col2:
         selected = option_menu(
             menu_title=None,
             options=[TR("login"), TR("register")],
+            key="auth_nav",
             icons=["box-arrow-in-right", "person-plus"],
             menu_icon="cast",
             default_index=0,
@@ -210,12 +215,12 @@ if not current_user:
                 "nav-link-selected": {"background-color": "#007a1e"},
             }
         )
-        
+
         if selected == TR("login"):
             # State Management for 2FA Login Flow
             if 'login_stage' not in st.session_state:
                 st.session_state.login_stage = 'credentials' # credentials -> otp
-            
+
             if st.session_state.login_stage == 'credentials':
                 with st.form("login_form"):
                     st.markdown(f"### {TR('login')}")
@@ -223,7 +228,7 @@ if not current_user:
                     pin = st.text_input(TR("pin"), type="password", placeholder="****")
                     st.write("")
                     submitted = st.form_submit_button(TR("login_btn"), type="primary")
-                    
+
                     if submitted:
                         if phone and pin:
                             # Verify Credentials First
@@ -244,24 +249,24 @@ if not current_user:
                                 st.error("Invalid Phone Number or PIN")
                         else:
                             st.warning("Please enter both Phone and PIN")
-            
+
             elif st.session_state.login_stage == 'otp':
-                st.markdown(f"### <i class='fa-solid fa-shield-halved'></i> 2FA Verification", unsafe_allow_html=True)
+                st.markdown("### <i class='fa-solid fa-shield-halved'></i> 2FA Verification", unsafe_allow_html=True)
                 st.caption(f"Code sent to {st.session_state.temp_phone}")
-                
+
                 # Auto-send OTP logic (only once)
                 if 'otp_sent_flag' not in st.session_state:
                     code = user_manager.generate_otp(st.session_state.temp_phone)
                     st.session_state.generated_code = code # Store for display
                     st.toast(f"🔐 Security Code: {code}", icon="📩")
                     st.session_state.otp_sent_flag = True
-                
+
                 # Display Code for easier testing
                 if 'generated_code' in st.session_state:
                     st.info(f"Simulation: Your Security Code is **{st.session_state.generated_code}**")
-                
+
                 otp_code = st.text_input("Security Code", key="otp_input_field")
-                
+
                 col_ver, col_back = st.columns(2)
                 with col_ver:
                     if st.button("Verify"):
@@ -288,12 +293,12 @@ if not current_user:
                         if 'otp_sent_flag' in st.session_state:
                             del st.session_state.otp_sent_flag
                         st.rerun()
-            
+
             # Forgot PIN Feature
             with st.expander("Forgot PIN?"):
                 st.markdown("### Reset PIN")
                 fp_phone = st.text_input("Enter Phone Number", key="fp_phone")
-                
+
                 # Check if user exists to prompt question
                 if fp_phone:
                     u_check = user_manager.get_user(fp_phone)
@@ -301,7 +306,7 @@ if not current_user:
                          st.info(f"Security Question: **{u_check.sec_q}**")
                          fp_ans = st.text_input("Your Answer", key="fp_ans")
                          fp_new_pin = st.text_input("New PIN (4 digits)", type="password", max_chars=4, key="fp_new_pin")
-                         
+
                          if st.button("Reset PIN"):
                              if user_manager.verify_security_answer(fp_phone, fp_ans):
                                  if len(fp_new_pin) == 4 and fp_new_pin.isdigit():
@@ -320,7 +325,7 @@ if not current_user:
                 new_name = st.text_input("Full Name")
                 new_phone = st.text_input(TR("phone"))
                 new_pin = st.text_input("Create PIN (4 digits)", type="password", max_chars=4)
-                
+
                 st.markdown("---")
                 st.markdown("**Security Question (for Account Recovery)**")
                 currency = st.selectbox("Preferred Currency", ["USD", "EUR", "KES", "GBP"], index=0)
@@ -331,7 +336,7 @@ if not current_user:
                     "What is your favorite food?"
                 ])
                 sec_a = st.text_input("Answer")
-                
+
                 reg_submitted = st.form_submit_button(TR("register"))
                 if reg_submitted:
                     if not validate_phone(new_phone):
@@ -348,12 +353,12 @@ if not current_user:
 else:
     # DEBUG: Check Role
     # st.write(f"Debug: Role is {getattr(current_user, 'role', 'user')}")
-    
+
     if getattr(current_user, 'role', 'user') == 'admin':
         # --- ADMIN DASHBOARD ---
         st.sidebar.title("🛡️ Admin Panel")
         st.sidebar.write(f"**Admin:** {current_user.name}")
-            
+
         # Impersonation Exit
         if st.session_state.get('impersonating', False):
              st.sidebar.warning("⚠️ Impersonation Active")
@@ -364,16 +369,16 @@ else:
 
         if st.sidebar.button(TR("logout"), key="admin_logout", width="stretch"):
             logout_user()
-        
-        st.markdown(f"## <i class='fa-solid fa-layer-group'></i> System Administration", unsafe_allow_html=True)
-        
+
+        st.markdown("## <i class='fa-solid fa-layer-group'></i> System Administration", unsafe_allow_html=True)
+
         # Admin Metrics
         col1, col2, col3, col4 = st.columns(4)
         total_users = len(user_manager.users)
         total_balance = sum(u.balance for u in user_manager.users.values())
         tx_count = len(transaction_manager.transactions)
         flagged_count = len([t for t in transaction_manager.transactions if t.flagged])
-        
+
         col1.metric("Users", total_users)
         col2.metric("Total Float", f"${total_balance:,.2f}")
         col3.metric("Transactions", tx_count)
@@ -382,6 +387,7 @@ else:
         # Admin Navigation
         selected_adm = option_menu(
             menu_title=None,
+            key="admin_nav",
             options=["Users", "Transactions", "Bills & Revenue", "Security", "Audit", "Analytics", "System", "Support"],
             icons=["people", "cash-coin", "receipt", "shield-lock", "clipboard-list", "graph-up", "gear", "headset"],
             default_index=0,
@@ -392,37 +398,37 @@ else:
         # ---------------- USERS TAB ----------------
         if selected_adm == "Users":
             st.subheader("👥 User Management")
-            
+
             # Search & Filter
             col_s1, col_s2 = st.columns([3, 1])
             with col_s1:
                 search_q = st.text_input("Search Users", placeholder="Phone, Name, or ID Number...")
             with col_s2:
                 filter_status = st.selectbox("Status", ["All", "Active", "Suspended", "Deleted"])
-            
+
             # Filter Logic
             users_list = []
             for u in user_manager.users.values():
                 # Filter by Status
                 if filter_status != "All" and u.status.lower() != filter_status.lower():
                     continue
-                    
+
                 # Search
                 q = search_q.lower()
                 if not q or q in u.phone or (u.name and q in u.name.lower()) or (u.id_number and q in u.id_number):
                     users_list.append(u)
-            
+
             st.dataframe([u.to_dict() for u in users_list], width="stretch")
-            
+
             # Action Panel
             st.markdown("### 🛠️ Account Actions")
             if users_list:
                 selected_user_phone = st.selectbox("Select Target User", [u.phone for u in users_list], format_func=lambda x: f"{x} - {user_manager.users[x].name}")
                 target_u = user_manager.users[selected_user_phone]
-                
+
                 with st.expander(f"Manage: {target_u.name} ({target_u.phone})", expanded=True):
                     col_act1, col_act2, col_act3 = st.columns(3)
-                    
+
                     with col_act1:
                         st.markdown("**KYC & Status**")
                         if st.button("Verify KYC", disabled=target_u.is_verified, width="stretch", key="btn_kyc"):
@@ -430,7 +436,7 @@ else:
                             st.success("User Verified")
                             time.sleep(1)
                             st.rerun()
-                            
+
                         if target_u.status == "active":
                              if st.button("Suspend Account", type="primary", width="stretch", key="btn_susp"):
                                  user_manager.suspend_user(target_u.phone)
@@ -449,14 +455,13 @@ else:
                         if st.button("Reset PIN", width="stretch", key="btn_pin"):
                              success, msg = user_manager.admin_reset_pin(target_u.phone)
                              st.info(msg)
-                        
+
                         risk_tier = st.selectbox("Risk Tier", ["low", "standard", "high"], index=["low", "standard", "high"].index(target_u.risk_tier))
-                        if risk_tier != target_u.risk_tier:
-                            if st.button("Update Risk Tier", width="stretch"):
-                                user_manager.update_user(target_u.phone, risk_tier=risk_tier)
-                                st.success(f"Risk tier updated to {risk_tier}")
-                                time.sleep(1)
-                                st.rerun()
+                        if risk_tier != target_u.risk_tier and st.button("Update Risk Tier", width="stretch"):
+                            user_manager.update_user(target_u.phone, risk_tier=risk_tier)
+                            st.success(f"Risk tier updated to {risk_tier}")
+                            time.sleep(1)
+                            st.rerun()
 
                     with col_act3:
                          st.markdown("**Support**")
@@ -464,22 +469,51 @@ else:
                              st.session_state.user = target_u
                              st.session_state.impersonating = True
                              st.rerun()
-                             
+
                          if st.button("HARD DELETE", type="primary", width="stretch"):
                              st.error("Feature valid but dangerous. Simulated delete.")
+
+            st.markdown("### Pending Account Deletion Requests")
+            pending_dels = privacy_manager.pending_deletions()
+            if not pending_dels:
+                st.info("No pending deletion requests.")
+            else:
+                for dr in pending_dels:
+                    with st.expander(f"Request #{dr['id']} \u2014 {dr['phone']} ({dr['requested_at'].replace('T', ' ')[:16]})"):
+                        st.write("**Reason:** " + str(dr['reason'] or "—"))
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            if st.button("Approve Deletion", type="primary", key=f"del_ok_{dr['id']}"):
+                                ok, msg = privacy_manager.approve_deletion(dr["id"], current_user.phone)
+                                if ok:
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        with col_d2:
+                            note = st.text_input("Rejection note", key=f"del_no_{dr['id']}")
+                            if st.button("Reject", key=f"del_rj_{dr['id']}"):
+                                ok, msg = privacy_manager.reject_deletion(dr["id"], current_user.phone, note)
+                                if ok:
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
 
         # ---------------- TRANSACTIONS TAB ----------------
         elif selected_adm == "Transactions":
             st.subheader("💳 Transaction Oversight")
-            
+
             # Live Feed
             all_tx = transaction_manager.transactions
             tx_data = [t.to_dict() for t in all_tx]
             tx_data.sort(key=lambda x: x['timestamp'], reverse=True)
             st.dataframe(tx_data, width="stretch")
-            
+
             col_t1, col_t2 = st.columns(2)
-            
+
             with col_t1:
                 st.markdown("### 🔙 Reversal Console")
                 rev_id = st.text_input("Enter Transaction ID to Reverse")
@@ -491,14 +525,14 @@ else:
                         st.rerun()
                     else:
                         st.error(msg)
-                        
+
             with col_t2:
                 st.markdown("### 💵 Manual Adjustment")
                 adj_phone = st.text_input("Target User Phone")
                 adj_amount = st.number_input("Amount", min_value=0.0)
                 adj_type = st.radio("Type", ["Credit (+)", "Debit (-)"])
                 adj_reason = st.text_input("Reason Code / Note")
-                
+
                 if st.button("Execute Adjustment", key="btn_adj"):
                     is_credit = adj_type == "Credit (+)"
                     success, msg = transaction_manager.admin_adjust_balance(adj_phone, adj_amount, f"ADMIN_ADJ: {adj_reason}", is_credit)
@@ -510,7 +544,7 @@ else:
         # ---------------- BILLS & REVENUE TAB ----------------
         elif selected_adm == "Bills & Revenue":
             st.subheader("🧾 Utilities & Fees")
-            
+
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                  st.markdown("### Revenue Stream")
@@ -520,7 +554,7 @@ else:
                  col_rev1.metric("Total Fee Revenue", f"${total_rev:,.2f}")
                  col_rev2.metric("Revenue Transactions", len(revenue_tx))
                  st.bar_chart([t.amount for t in revenue_tx])
-                 
+
             with col_b2:
                  st.markdown("### Utility Providers")
                  # Mock Config
@@ -539,7 +573,7 @@ else:
         # ---------------- SECURITY TAB ----------------
         elif selected_adm == "Security":
             st.subheader("🛡️ Security Center")
-            
+
             flagged = [t for t in transaction_manager.transactions if t.flagged]
             if flagged:
                 st.error(f"{len(flagged)} Suspicious Transactions Detected")
@@ -547,7 +581,7 @@ else:
                     st.warning(f"{t.id} | {t.sender_phone} -> {t.receiver_phone} | ${t.amount} | Reason: {t.flag_reason}")
             else:
                 st.success("No active security alerts.")
-                
+
             st.markdown("### Fraud Rules Configuration")
             st.checkbox("Block transfers > $500 to new recipients", value=True)
             st.checkbox("Auto-freeze account after 3 failed PIN attempts", value=True)
@@ -565,7 +599,7 @@ else:
                 audit_actor = st.text_input("Filter by Actor (phone)")
             with col_f3:
                 audit_limit = st.slider("Entries", 50, 1000, 200)
-            
+
             logs = get_audit_logs(limit=audit_limit, actor_phone=audit_actor or None,
                                   action=audit_action or None)
             if not logs:
@@ -584,7 +618,7 @@ else:
         elif selected_adm == "Analytics":
             st.subheader("📊 Reports & Analytics")
             st.info("Export data for external analysis.")
-            
+
             col_exp1, col_exp2 = st.columns(2)
             with col_exp1:
                 st.markdown("**User Data**")
@@ -608,7 +642,7 @@ else:
                         writer.writerow(t.to_dict())
                 st.download_button("Download Transactions CSV", data=tx_csv.getvalue(),
                                    file_name="transactions.csv", mime="text/csv")
-                
+
             st.markdown("### Daily Transaction Volume")
             from collections import Counter
             daily = Counter(t.timestamp[:10] for t in transaction_manager.transactions)
@@ -621,7 +655,7 @@ else:
         elif selected_adm == "System":
             st.subheader("⚙️ System Configuration")
             st.selectbox("System Status", ["Operational", "Maintenance Mode", "ReadOnly"])
-            
+
             st.markdown("**Fee Configuration**")
             col_sys1, col_sys2 = st.columns(2)
             with col_sys1:
@@ -630,7 +664,7 @@ else:
             with col_sys2:
                  st.number_input("Bill Payment Fee (Fixed)", value=0.5)
                  st.number_input("Forex Margin (%)", value=2.5)
-            
+
             st.button("Save System Config")
 
             st.markdown("---")
@@ -732,14 +766,14 @@ else:
         st.stop()
 
     # --- Dashboard View ---
-    
+
     # Sidebar
     with st.sidebar:
         # Impersonation Exit for Admin
         if st.session_state.get('impersonating', False):
             st.error("⚠️ IMPERSONATING USER")
             if st.button("EXIT IMPERSONATION", type="primary", width="stretch"):
-                # We need to restore the admin session. 
+                # We need to restore the admin session.
                 # Ideally we stored the admin user in session state too, but simply clearing 'user' forces login.
                 # Retaining the login would require storing 'admin_user' separately.
                 # For this prototype, forcing re-login is safer/easier.
@@ -755,25 +789,26 @@ else:
             <p style="color: var(--mms-muted);"><i class="fa-solid fa-phone"></i> {current_user.phone}</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         # QR Code Display
         try:
-            import qrcode
-            from io import BytesIO
             import base64
-            
+            from io import BytesIO
+
+            import qrcode
+
             # Create QR Data
             qr_data = f"MMS:{current_user.phone}"
             qr = qrcode.QRCode(version=1, box_size=5, border=2)
             qr.add_data(qr_data)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
-            
+
             # Convert to Displayable format
             buffered = BytesIO()
             img.save(buffered, format="PNG")
             img_str = base64.b64encode(buffered.getvalue()).decode()
-            
+
             st.markdown(f"""
             <div style="text-align: center; margin-bottom: 20px; padding: 10px; background: white; border-radius: 10px;">
                 <p style='font-size: 0.8em; color: var(--mms-muted);'>Scan to Request/Pay</p>
@@ -782,13 +817,13 @@ else:
             """, unsafe_allow_html=True)
         except ImportError:
             st.warning("Install 'qrcode' to see QR.")
-        
+
         if st.button(TR("logout")):
             logout_user()
-    
+
     # Balance Section
     st.markdown(f"### <i class='fa-solid fa-hand-spock'></i> {TR('hello')}, {current_user.name.split()[0]}", unsafe_allow_html=True)
-    
+
     if not current_user.is_verified:
          st.error(f"⚠️ **{TR('kyc_needed')}** limit: transactions blocked.", icon="🚫")
 
@@ -810,10 +845,10 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     # Quick Actions Grid (To mimic app home screen)
     # Using columns for buttons to simulate the "Grid"
-    
+
     st.markdown("##### Quick Actions")
 
     # Operations using Option Menu (Styled as Tab Bar)
@@ -824,6 +859,7 @@ else:
     nav_icon_color = "#00e676" if st.session_state.get("dark_mode", False) else "#007a1e"
     selected_action = option_menu(
         menu_title=None,
+        key="main_nav",
         options=nav_options,
         icons=nav_icons,
         default_index=0,
@@ -835,18 +871,18 @@ else:
             "nav-link-selected": {"background-color": "#007a1e"},
         }
     )
-    
+
     # Map translated menu items back to internal keys if needed, OR just string match
     # Since we are using translations, the `selected_action` variable holds the translated string.
     # We should normalize this or use logic that checks against the Translation dict.
-    
+
     # Helper to check selection
     def is_selected(key):
         return selected_action == TR(key)
 
     def stepup_required(amount) -> bool:
         """True when this debit exceeds the high-value threshold and 2FA is on."""
-        if not current_user.two_factor_enabled:
+        if current_user is None or not current_user.two_factor_enabled:
             return False
         try:
             return Decimal(str(amount)) > HIGH_VALUE_STEPUP_THRESHOLD
@@ -909,7 +945,7 @@ else:
                 with col_s2:
                     send_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0, key="send_amt")
                 st.caption(f"Saved beneficiary — {receiver_phone}")
-            
+
             send_desc = st.text_input(TR("desc"), key="send_desc")
 
             if st.button("Proceed to Verification", type="primary"):
@@ -940,7 +976,7 @@ else:
              data = st.session_state.review_data
              st.subheader("Verify Transaction Details")
              st.info("Please review the details below carefully before confirming.")
-             
+
              # Fee Calculation (0% transfer fee — the platform is free to use)
              fee = data['amount'] * float(TRANSFER_FEE_RATE)
              total_deduction = data['amount'] + fee
@@ -972,11 +1008,11 @@ else:
                     </div>
                  </div>
                  """, unsafe_allow_html=True)
-                 
+
                  st.write("")
                  if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
                      render_stepup_challenge()
-                 st.write("") 
+                 st.write("")
                  col_btn1, col_btn2 = st.columns(2)
                  with col_btn1:
                      if st.button("Cancel", width="stretch"):
@@ -1008,12 +1044,12 @@ else:
 
     elif is_selected("request"):
         st.subheader(TR("request"))
-        
+
         with st.form("req_form"):
             target_phone = st.text_input(f"{TR('phone')} ({TR('payer')})")
             req_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0)
             req_desc = st.text_input(TR("desc"))
-            
+
             if st.form_submit_button(TR("request"), type="primary"):
                 if target_phone == current_user.phone:
                     st.error("Cannot request from yourself.")
@@ -1031,9 +1067,9 @@ else:
     elif is_selected("pay_bills"):
         if not st.session_state.review_mode:
             st.subheader(TR("pay_bills"))
-            
+
             bill_type = st.selectbox("Select Biller Category", ["Airtime & Data", "Electricity (Prepaid)", "Water Utility", "Internet Subscription"])
-            
+
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 if bill_type == "Airtime & Data":
@@ -1045,10 +1081,10 @@ else:
                 else:
                     biller_id = st.text_input("Account/customer ID")
                     biller_name = "Utility Provider"
-                    
+
             with col_b2:
                 bill_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=5.0)
-                
+
             if st.button("Proceed to Pay"):
                 if not biller_id:
                     st.error("Please enter the ID number.")
@@ -1067,11 +1103,11 @@ else:
         else:
              data = st.session_state.review_data
              st.subheader("Confirm Bill Payment")
-             
+
              fee = float(BILL_FEE)
              total = data['amount'] + fee
              fee_label = "$0.25"
-             
+
              with st.container():
                  st.markdown(f"""
                  <div class="conf-card">
@@ -1097,7 +1133,7 @@ else:
                     </div>
                  </div>
                  """, unsafe_allow_html=True)
-                 
+
                  col_btn1, col_btn2 = st.columns(2)
                  with col_btn1:
                      if st.button(TR("cancel"), width="stretch"):
@@ -1116,18 +1152,18 @@ else:
 
     elif is_selected("inbox"):
         st.subheader(TR("inbox"))
-        
+
         tab_req, tab_notif = st.tabs([TR("request"), TR("notifications")])
-        
+
         with tab_req:
             # Filter for pending requests where current user is the Payer (Sender)
             pending_requests = [
-                t for t in transaction_manager.transactions 
-                if t.sender_phone == current_user.phone 
-                and t.type == "REQUEST" 
+                t for t in transaction_manager.transactions
+                if t.sender_phone == current_user.phone
+                and t.type == "REQUEST"
                 and t.status == "PENDING"
             ]
-            
+
             if not pending_requests:
                 st.info("No pending requests.")
             else:
@@ -1135,7 +1171,7 @@ else:
                     with st.container():
                          requester = user_manager.get_user(req.receiver_phone)
                          req_name = requester.name if requester else "Unknown"
-                         
+
                          st.markdown(f"""
                          <div style="border: 1px solid var(--mms-border); padding: 15px; border-radius: 8px; margin-bottom: 7px;">
                             <div style="font-weight: bold;">Request from {req_name} ({req.receiver_phone})</div>
@@ -1144,7 +1180,7 @@ else:
                             <div style="font-size: 0.8em; color: var(--mms-muted);">{req.timestamp}</div>
                          </div>
                          """, unsafe_allow_html=True)
-                         
+
                          col_act1, col_act2 = st.columns(2)
                          with col_act1:
                              if st.button(TR("pay_bills").split()[0], key=f"pay_{req.id}", type="primary", width="stretch"): # "Pay"
@@ -1169,7 +1205,7 @@ else:
         with tab_notif:
             all_tx = transaction_manager.get_history(current_user.phone)
             notifications = []
-            
+
             # Derive alerts
             for t in all_tx:
                 if t.receiver_phone == current_user.phone and t.type == "TRANSFER":
@@ -1188,15 +1224,15 @@ else:
                         "icon": "fa-receipt",
                         "color": "var(--mms-muted)"
                     })
-                elif t.type == "DEPOSIT" and t.sender_phone == "SYSTEM": 
-                     if t.receiver_phone == current_user.phone: # It's a credit
-                         notifications.append({
-                            "time": t.timestamp,
-                            "title": "Deposit Successful",
-                            "msg": f"Your account was credited with {t.currency} {t.amount:,.2f}.",
-                            "icon": "fa-wallet",
-                            "color": "var(--mms-primary-deep)"
-                        })
+                elif t.type == "DEPOSIT" and t.sender_phone == "SYSTEM" and t.receiver_phone == current_user.phone:
+                    # It's a credit
+                    notifications.append({
+                        "time": t.timestamp,
+                        "title": "Deposit Successful",
+                        "msg": f"Your account was credited with {t.currency} {t.amount:,.2f}.",
+                        "icon": "fa-wallet",
+                        "color": "var(--mms-primary-deep)"
+                    })
 
             if not notifications:
                 st.info("No notifications.")
@@ -1219,20 +1255,20 @@ else:
         if not st.session_state.review_mode:
             st.subheader(TR("load"))
             st.info("Link your Debit/Credit card to fund your wallet.")
-            
+
             # Mock Card Input
             col_c1, col_c2 = st.columns([2, 1])
             with col_c1:
                 st.text_input("Card Number", placeholder="0000 0000 0000 0000")
             with col_c2:
                 st.text_input("CVV", type="password", max_chars=3)
-            
+
             col_ca1, col_ca2 = st.columns(2)
             with col_ca1:
                 st.text_input("Expiry Date", placeholder="MM/YY")
             with col_ca2:
                 dep_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=100.0, key="dep_u")
-                
+
             dep_desc = "Bank Transfer"
 
             if st.button("Proceed to Verification", type="primary"):
@@ -1249,7 +1285,7 @@ else:
         else:
              data = st.session_state.review_data
              st.subheader(TR("confirm"))
-             
+
              with st.container():
                  st.markdown(f"""
                  <div class="conf-card">
@@ -1263,7 +1299,7 @@ else:
                     </div>
                  </div>
                  """, unsafe_allow_html=True)
-                 
+
                  st.write("")
                  col_btn1, col_btn2 = st.columns(2)
                  with col_btn1:
@@ -1282,13 +1318,13 @@ else:
                              st.rerun()
                          else:
                              st.error(f"{TR('error')}: {msg}")
-    
+
     elif is_selected("withdraw"):
         if not st.session_state.review_mode:
             st.subheader(TR("withdraw"))
             with_amount = st.number_input(f"{TR('amount')} ({current_user.currency})", min_value=1.0, step=10.0, key="with_u")
             with_desc = st.text_input(f"{TR('desc')} (Optional)", key="with_desc")
-            
+
             if st.button("Proceed to Verification", type="primary"):
                  if with_amount <= 0:
                     st.error("Amount must be greater than 0.")
@@ -1306,12 +1342,12 @@ else:
              data = st.session_state.review_data
              st.subheader(TR("confirm"))
              st.info("Please confirm the withdrawal details below.")
-             
+
              # Calculate Fee (0.5% withdrawal fee)
              fee = data['amount'] * float(WITHDRAWAL_FEE_RATE)
              total_deduction = data['amount'] + fee
              fee_label = "0.5%"
-             
+
              with st.container():
                  st.markdown(f"""
                  <div class="conf-card">
@@ -1337,7 +1373,7 @@ else:
                     </div>
                  </div>
                  """, unsafe_allow_html=True)
-                 
+
                  st.write("")
                  if stepup_required(data['amount']) and not st.session_state.get('stepup_verified'):
                      render_stepup_challenge()
@@ -1596,12 +1632,12 @@ else:
 
     elif is_selected("settings"):
         st.subheader(TR("settings"))
-        
+
         with st.form("settings_form"):
             st.markdown("### Update Profile")
             new_name = st.text_input("Full Name", value=current_user.name)
             new_pin = st.text_input(f"New {TR('pin')} (Leave blank to keep current)", type="password", max_chars=4)
-            
+
             st.markdown("---")
             st.markdown("**Update Security Question**")
             current_q_index = 0
@@ -1611,26 +1647,26 @@ else:
                 "Which city were you born in?",
                 "What is your favorite food?"
             ]
-            
+
             # Try to find current question index if it exists
             if current_user.sec_q in options:
                 current_q_index = options.index(current_user.sec_q)
-                
+
             new_sec_q = st.selectbox("Select a Question", options, index=current_q_index)
             new_sec_a = st.text_input("New Answer (Leave blank to keep current)")
-            
+
             if st.form_submit_button("Update Profile"):
                 valid = True
                 if new_pin and (len(new_pin) != 4 or not new_pin.isdigit()):
                     st.error("PIN must be 4 digits")
                     valid = False
-                
+
                 if valid:
                     # Pass None if empty so it doesn't change
                     pin_arg = new_pin if new_pin else None
                     qs_arg = new_sec_q
                     ans_arg = new_sec_a if new_sec_a else None
-                    
+
                     success, msg = user_manager.update_user(current_user.phone, name=new_name, pin=pin_arg, sec_q=qs_arg, sec_a=ans_arg)
                     if success:
                         st.success(f"{TR('success')}! {msg}")
@@ -1677,12 +1713,11 @@ else:
                         st.success("Session revoked.")
                         time.sleep(1)
                         st.rerun()
-            if len(sessions) > 1:
-                if st.button("Log Out Everywhere Else", type="primary"):
-                    n = session_manager.revoke_all(current_user.phone, except_token=st.session_state.get('session_token'))
-                    st.success(f"Revoked {n} other session(s).")
-                    time.sleep(1)
-                    st.rerun()
+            if len(sessions) > 1 and st.button("Log Out Everywhere Else", type="primary"):
+                n = session_manager.revoke_all(current_user.phone, except_token=st.session_state.get('session_token'))
+                st.success(f"Revoked {n} other session(s).")
+                time.sleep(1)
+                st.rerun()
 
         st.markdown("---")
         st.markdown("### Notification Channels")
@@ -1715,7 +1750,54 @@ else:
                         st.rerun()
         else:
             st.info("No notification channels yet.")
-    
+
+        st.markdown("---")
+        st.markdown("### Privacy & Data")
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.markdown("**Export my data**")
+            st.caption("Download everything the platform holds about you (JSON or CSV).")
+            export_data = privacy_manager.export_user_data(current_user.phone)
+            if export_data:
+                import json as _json
+                st.download_button("Download my data (JSON)",
+                                   data=_json.dumps(export_data, indent=2, default=str),
+                                   file_name=f"my_data_{current_user.phone}.json",
+                                   mime="application/json", key="privacy_json")
+                st.download_button("Download my data (CSV)",
+                                   data=export_to_csv(export_data),
+                                   file_name=f"my_data_{current_user.phone}.csv",
+                                   mime="text/csv", key="privacy_csv")
+        with col_p2:
+            st.markdown("**Delete my account**")
+            st.caption("Requires admin approval. Financial records are kept but pseudonymized.")
+            my_reqs = privacy_manager.my_deletion_requests(current_user.phone)
+            pending_req = next((r for r in my_reqs if r["status"] == "pending"), None)
+            if pending_req:
+                st.warning(f"Deletion request #{pending_req['id']} is pending admin review.")
+                if st.button("Withdraw Request", key="privacy_withdraw"):
+                    privacy_manager.cancel_deletion_request(current_user.phone, pending_req["id"])
+                    st.rerun()
+            else:
+                with st.form("deletion_form"):
+                    reason = st.text_area("Reason (optional)")
+                    confirm_del = st.checkbox("I understand my account will be deleted after admin approval")
+                    if st.form_submit_button("Request Account Deletion", type="primary"):
+                        if not confirm_del:
+                            st.error("Please confirm you understand.")
+                        else:
+                            ok, msg = privacy_manager.request_deletion(current_user.phone, reason)
+                            if ok:
+                                st.success(msg)
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+            for r in my_reqs:
+                if r["status"] != "pending":
+                    st.caption(f"Request #{r['id']}: {r['status']}"
+                                + (f" ({r['reviewed_at'][:10]})" if r["reviewed_at"] else ""))
+
     elif is_selected("verify_id"):
         st.subheader(TR("verify_id"))
         if current_user.is_verified:
@@ -1727,7 +1809,7 @@ else:
             with st.form("kyc_form"):
                 id_type = st.selectbox("Document Type", ["passport", "national_id"])
                 id_number = st.text_input("Document Number")
-                
+
                 if st.form_submit_button("Submit for Verification"):
                     if not id_number:
                         st.error("Please enter your ID number.")
@@ -1745,23 +1827,23 @@ else:
     elif is_selected("history"):
         st.subheader("Recent Transactions")
         history = transaction_manager.get_history(current_user.phone)
-        
+
         if not history:
             st.markdown('<div class="empty-state"><i class="fa-solid fa-receipt"></i><p>No transactions yet.</p></div>', unsafe_allow_html=True)
         else:
             # Spending over recent days (debits only)
             from collections import defaultdict
-            daily = defaultdict(float)
+            daily_spend: defaultdict[str, float] = defaultdict(float)
             for t in history:
                 is_debit = (t.sender_phone == current_user.phone and t.type in ("TRANSFER", "WITHDRAWAL", "BILL_PAYMENT", "SUBSCRIPTION"))
                 if is_debit:
-                    daily[t.timestamp[:10]] += float(t.amount)
-            if daily:
+                    daily_spend[t.timestamp[:10]] += float(t.amount)
+            if daily_spend:
                 st.markdown(f"#### 📈 {TR('spending')}")
-                st.bar_chart(dict(sorted(daily.items())[-7:]))
+                st.bar_chart(dict(sorted(daily_spend.items())[-7:]))
             # Sort by timestamp descending
             history.sort(key=lambda x: x.timestamp, reverse=True)
-            
+
             for t in history:
                 # Determine icon/color
                 if t.type == "TRANSFER":
@@ -1807,11 +1889,11 @@ else:
                     detail_text = t.description
                 else:
                     detail_text = desc_text
-                
+
                 # Get Sender/Receiver Names
                 sender_name = "System"
                 receiver_name = "System"
-                
+
                 if t.sender_phone != "SYSTEM":
                      s_user = user_manager.get_user(t.sender_phone)
                      sender_name = s_user.name if s_user else "Unknown"
@@ -1819,7 +1901,7 @@ else:
                 if t.receiver_phone != "SYSTEM":
                      r_user = user_manager.get_user(t.receiver_phone)
                      receiver_name = r_user.name if r_user else "Unknown"
-                
+
                 # Receipt Content
                 receipt_text = f"""--- TRANSACTION RECEIPT ---
 Date: {t.timestamp}
@@ -1835,7 +1917,7 @@ Status: Successful
                 # Custom HTML Transaction Card via CSS Class
                 # Check style details
                 amt_class = "credit" if badge == "CREDIT" else "debit"
-                
+
                 with st.expander(f"{detail_text}", expanded=False):
                     st.markdown(f"""
                     <div class="tx-card">
@@ -1851,10 +1933,10 @@ Status: Successful
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-                    
+
                     st.markdown("#### Transaction Details")
                     col_d1, col_d2 = st.columns(2)
-                    
+
                     with col_d1:
                         st.markdown(f"**Transaction ID:** `{t.id}`")
                         st.markdown(f"**Date:** {t.timestamp}")
@@ -1865,11 +1947,11 @@ Status: Successful
                         st.caption(f"Phone: {t.sender_phone}")
                         st.markdown(f"**Recipient:** {receiver_name}")
                         st.caption(f"Phone: {t.receiver_phone}")
-                    
+
                     st.download_button(
-                        label="Download Receipt", 
-                        data=receipt_text, 
-                        file_name=f"receipt_{t.id}.txt", 
+                        label="Download Receipt",
+                        data=receipt_text,
+                        file_name=f"receipt_{t.id}.txt",
                         mime="text/plain",
                         key=f"dl_{t.id}"
                     )
@@ -1892,10 +1974,10 @@ Status: Successful
             with st.form("kyc_form"):
                 id_type = st.selectbox("ID Type", ["Passport", "National ID"])
                 id_number = st.text_input("ID Number")
-                
+
                 # Mock Upload
                 id_file = st.file_uploader("Upload ID Image", type=["jpg", "png", "pdf"])
-                
+
                 submitted = st.form_submit_button(TR("confirm"))
                 if submitted:
                     if id_number and id_file:
@@ -1903,7 +1985,7 @@ Status: Successful
                         if success:
                             st.success(f"{TR('success')}! {msg}")
                             time.sleep(1)
-                            st.rerun() 
+                            st.rerun()
                         else:
                             st.error(f"{TR('error')}: {msg}")
                     else:

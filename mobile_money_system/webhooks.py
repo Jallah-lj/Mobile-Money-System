@@ -8,24 +8,24 @@ authenticity. Deliveries are retried (3 attempts, short backoff) and every
 attempt is recorded in the delivery log for debugging.
 """
 
+import builtins
 import hashlib
 import hmac
 import json
 import secrets
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 import uuid
-from typing import Dict, List, Optional, Tuple
 
 try:
-    from models import utcnow
-    from database import get_db, init_db
     from audit import log_event
+    from database import get_db, init_db
+    from models import utcnow
 except ImportError:
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.database import get_db, init_db
     from mobile_money_system.audit import log_event
+    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.models import utcnow
 
 ALL_EVENTS = ("TRANSFER", "DEPOSIT", "WITHDRAWAL", "BILL_PAYMENT", "REQUEST")
 
@@ -39,8 +39,8 @@ def sign_payload(secret: str, body: bytes) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def _post(url: str, body: bytes, headers: Dict[str, str],
-          timeout: float = DELIVERY_TIMEOUT_SECONDS) -> Tuple[Optional[int], str]:
+def _post(url: str, body: bytes, headers: dict[str, str],
+          timeout: float = DELIVERY_TIMEOUT_SECONDS) -> tuple[int | None, str]:
     """POST JSON to a webhook URL. Returns (status_code, error)."""
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
@@ -56,8 +56,8 @@ class WebhookManager:
     def __init__(self):
         init_db()  # Ensure schema exists (safe on fresh databases)
 
-    def add(self, name: str, url: str, events: List[str],
-            secret: Optional[str] = None) -> Tuple[bool, str]:
+    def add(self, name: str, url: str, events: list[str],
+            secret: str | None = None) -> tuple[bool, str]:
         """Register a webhook endpoint. Returns (success, message)."""
         name = (name or "").strip()
         url = (url or "").strip()
@@ -79,13 +79,13 @@ class WebhookManager:
         log_event("ADMIN", "WEBHOOK_ADDED", target=url, details=f"{name} events={events}")
         return True, f"Webhook '{name}' registered (secret: {secret}). Save it — it is shown only once."
 
-    def list(self) -> List[Dict]:
+    def list(self) -> list[dict]:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM webhooks ORDER BY created_at DESC")
             return [dict(r) for r in cursor.fetchall()]
 
-    def get(self, webhook_id: int) -> Optional[Dict]:
+    def get(self, webhook_id: int) -> dict | None:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
@@ -111,8 +111,8 @@ class WebhookManager:
             conn.commit()
         return changed > 0
 
-    def recent_deliveries(self, webhook_id: Optional[int] = None,
-                          limit: int = 50) -> List[Dict]:
+    def recent_deliveries(self, webhook_id: int | None = None,
+                          limit: int = 50) -> builtins.list[dict]:
         with get_db() as conn:
             cursor = conn.cursor()
             if webhook_id is None:
@@ -125,7 +125,7 @@ class WebhookManager:
             return [dict(r) for r in cursor.fetchall()]
 
     def _record_delivery(self, webhook_id: int, event: str, payload: str,
-                         status_code: Optional[int], attempts: int, error: str) -> None:
+                         status_code: int | None, attempts: int, error: str) -> None:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -136,7 +136,7 @@ class WebhookManager:
                   utcnow().isoformat(), error))
             conn.commit()
 
-    def dispatch(self, event: str, payload: Dict) -> List[Dict]:
+    def dispatch(self, event: str, payload: dict) -> builtins.list[dict]:
         """Deliver an event to every active webhook subscribed to it.
 
         Returns a list of per-webhook result dicts. Never raises — delivery
@@ -182,6 +182,6 @@ class WebhookManager:
         return results
 
 
-def dispatch_event(event: str, payload: Dict, manager: Optional[WebhookManager] = None) -> List[Dict]:
+def dispatch_event(event: str, payload: dict, manager: WebhookManager | None = None) -> list[dict]:
     """Convenience wrapper used as a TransactionManager event listener."""
     return (manager or WebhookManager()).dispatch(event, payload)

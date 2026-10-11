@@ -5,9 +5,7 @@ are trivial to unit-test. All money values are Decimal; timestamps are the
 naive-UTC ISO strings stored in the transactions table (string-comparable).
 """
 
-import calendar
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
 
 try:
     from models import Transaction, utcnow
@@ -27,7 +25,7 @@ CATEGORY_LABELS = {
 }
 
 
-def month_bounds(year: int, month: int) -> Tuple[str, str]:
+def month_bounds(year: int, month: int) -> tuple[str, str]:
     """ISO bounds [start, end) of a calendar month (naive UTC)."""
     start = f"{year:04d}-{month:02d}-01T00:00:00"
     if month == 12:
@@ -54,8 +52,8 @@ def net_flow(t: Transaction, phone: str) -> Decimal:
     return Decimal("0")
 
 
-def monthly_totals(txns: List[Transaction], phone: str, months: int = 6,
-                   now=None) -> List[Dict]:
+def monthly_totals(txns: list[Transaction], phone: str, months: int = 6,
+                   now=None) -> list[dict]:
     """Income / spending / fees per month for the last `months` months.
 
     Returns a chronological list of {month, income, spending, fees} dicts
@@ -90,11 +88,11 @@ def monthly_totals(txns: List[Transaction], phone: str, months: int = 6,
     return result
 
 
-def spending_by_category(txns: List[Transaction], phone: str,
-                         year: Optional[int] = None,
-                         month: Optional[int] = None) -> Dict[str, Decimal]:
+def spending_by_category(txns: list[Transaction], phone: str,
+                         year: int | None = None,
+                         month: int | None = None) -> dict[str, Decimal]:
     """Outgoing spend grouped by category (optionally for one month)."""
-    categories: Dict[str, Decimal] = {}
+    categories: dict[str, Decimal] = {}
     for t in txns:
         if year is not None and month is not None and not in_month(t.timestamp, year, month):
             continue
@@ -107,9 +105,9 @@ def spending_by_category(txns: List[Transaction], phone: str,
     return categories
 
 
-def top_counterparties(txns: List[Transaction], phone: str, n: int = 5) -> List[Dict]:
+def top_counterparties(txns: list[Transaction], phone: str, n: int = 5) -> list[dict]:
     """Top recipients of the user's outgoing transfers (all time)."""
-    grouped: Dict[str, Dict] = {}
+    grouped: dict[str, dict] = {}
     for t in txns:
         if t.sender_phone != phone or t.type != "TRANSFER" or t.status != "COMPLETED":
             continue
@@ -121,8 +119,8 @@ def top_counterparties(txns: List[Transaction], phone: str, n: int = 5) -> List[
     return ranked[:n]
 
 
-def monthly_statement(txns: List[Transaction], phone: str,
-                      year: int, month: int) -> Dict:
+def monthly_statement(txns: list[Transaction], phone: str,
+                      year: int, month: int) -> dict:
     """Full monthly statement: opening/closing balances, flows, transactions.
 
     Opening balance is reconstructed from all flows before the month; the
@@ -161,8 +159,8 @@ def monthly_statement(txns: List[Transaction], phone: str,
     }
 
 
-def budget_status(txns: List[Transaction], phone: str, budget: Decimal,
-                  year: int, month: int) -> Dict:
+def budget_status(txns: list[Transaction], phone: str, budget: Decimal,
+                  year: int, month: int) -> dict:
     """Spending (incl. fees) against a monthly budget."""
     cats = spending_by_category(txns, phone, year, month)
     spent = sum(cats.values(), Decimal("0"))
