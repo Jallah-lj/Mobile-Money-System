@@ -60,7 +60,34 @@ flutter run --dart-define=API_BASE_URL=http://192.168.1.10:8000
 
 The default `API_BASE_URL` is `http://10.0.2.2:8000` (Android emulator → host).
 
-## 3. Build a release binary
+## 3. Preview the app — three ways
+
+**A. On your machine (emulator, simulator, or phone)** — section 2 above.
+
+**B. In a browser — no emulator needed (Flutter web target):**
+
+```bash
+# API on localhost (CORS from localhost is allowed by default):
+flutter run -d chrome --web-port 8080 --dart-define=API_BASE_URL=http://localhost:8000
+```
+
+This opens the app UI in Chrome. The API allows CORS from `localhost` /
+`127.0.0.1` on any port by default; for a deployed web build set
+`MMS_CORS_ORIGINS=https://your-app.example.com` on the API server.
+
+**C. No setup at all — CI-built debug APK:**
+
+The repo ships a ready-made workflow at `.github/workflows/mobile-apk.yml`
+(see "Adding the CI workflow" below). Once added, every push that touches
+`mobile_app/` builds a **debug APK** you can download from the GitHub Actions
+tab (*Artifacts*) and install on any Android phone (enable "Install unknown
+apps"). Rebuild with your API URL for a phone build:
+
+```bash
+flutter build apk --debug --dart-define=API_BASE_URL=https://api.example.com
+```
+
+## 4. Build a release binary
 
 ```bash
 flutter build apk            # Android
@@ -76,6 +103,17 @@ flutter build appbundle      # Google Play
 Both have 2FA enabled by default — the login screen will ask for the SMS code
 (in development the code is printed to the API server console by the console
 SMS provider).
+
+## Adding the CI workflow
+
+The sandbox's GitHub connection cannot push files under `.github/workflows/`
+(lacking the `workflows` permission), so `mobile-apk.yml` is provided
+untracked. Add it yourself in 30 seconds:
+
+1. On GitHub, open your repo → `.github/workflows/` → **Add file** → **Create new file**
+2. Name it `mobile-apk.yml` and paste the contents of the local
+   `.github/workflows/mobile-apk.yml`
+3. Commit — the workflow runs on pushes that touch `mobile_app/`
 
 ## Project layout
 
