@@ -193,6 +193,35 @@ builds and deploys on pushes to `main`.
 
 ---
 
+## 📱 Mobile App (Flutter)
+
+The platform ships with a **Flutter client** in [`mobile_app/`](mobile_app/) —
+one Dart codebase that builds for **Android and iOS**. It consumes the same
+REST API (`mobile_money_system/api.py`) as the webapp, so balances and history
+stay in sync across devices.
+
+- **App auth**: per-user Bearer tokens (`POST /auth/login`, 2FA OTP stage
+  included) backed by the server-side `sessions` table — revocable, durable,
+  "log out everywhere" works for app sessions too
+- **Token-scoped endpoints** (`/me/*`): transfers (with `Idempotency-Key` safe
+  retries), money requests, bill payments, beneficiaries, scheduled payments,
+  support tickets, history, KYC, data export
+- **Screens**: login/register, home (balance), send money, pay bills, history
+
+```bash
+# 1. Run the API from the repo root
+uvicorn mobile_money_system.api:app --host 0.0.0.0 --port 8000
+
+# 2. Run the app (Android emulator shown; 10.0.2.2 = your machine)
+cd mobile_app && flutter pub get
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
+
+See [`mobile_app/README.md`](mobile_app/README.md) for iOS, real-device, and
+release-build instructions.
+
+---
+
 ## 📄 License
 
 MIT

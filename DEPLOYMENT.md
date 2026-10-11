@@ -14,6 +14,10 @@ docker compose up --build
 | Web app (Streamlit) | http://localhost:8501 | The mobile-money UI |
 | REST API (FastAPI) | http://localhost:8000 | Swagger docs at `/docs` |
 | Scheduler worker | (no port) | Fires due standing orders + daily retention/auto-backup, even with the app closed |
+
+The **mobile app** ([`mobile_app/`](mobile_app/README.md)) is a Flutter client
+that talks to the `api` service — point it at the deployed API URL with
+`flutter run --dart-define=API_BASE_URL=https://<your-api-host>`.
 | Health checks | `/_stcore/health`, `/health` | Wired into compose healthchecks |
 
 Both services share one SQLite database in the `mms-data` named volume
