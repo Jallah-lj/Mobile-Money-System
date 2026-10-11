@@ -155,3 +155,45 @@ def test_next_run_helper():
     assert _next_run("monthly", base) == "2026-11-10T12:00:00"
     # Month-end clamping: Jan 31 -> Feb 28
     assert _next_run("monthly", datetime(2026, 1, 31)) == "2026-02-28T00:00:00"
+
+
+def test_background_scheduler_executes_due_payments(managers, verified_user, second_verified_user):
+    """The process-global background thread fires due payments without any app run."""
+    import time as _time
+    from datetime import timedelta
+
+    from mobile_money_system.models import utcnow
+    from mobile_money_system.scheduled import ScheduledPaymentManager, start_scheduler, stop_scheduler
+
+    phone, um, tm = verified_user
+    bob_phone, _, _ = second_verified_user
+    spm = ScheduledPaymentManager(um, tm)
+    past = (utcnow() - timedelta(minutes=5)).isoformat()
+    ok, msg = spm.create(phone, "TRANSFER", 30, "bg tick",
+                         receiver_phone=bob_phone, frequency="once", start_at=past)
+    assert ok, msg
+
+    start_scheduler(spm, tick_seconds=0.1)
+    try:
+        deadline = _time.monotonic() + 10
+        while _time.monotonic() < deadline:
+            if um.get_user(bob_phone).balance == 30:
+                break
+            _time.sleep(0.05)
+        assert um.get_user(bob_phone).balance == 30
+        # 'once' order deactivated after firing — no double-fire on later ticks
+        _time.sleep(0.4)
+        assert um.get_user(bob_phone).balance == 30
+    finally:
+        stop_scheduler()
+
+
+def test_scheduler_disabled_with_zero_tick(managers, verified_user, second_verified_user):
+    """tick_seconds=0 must not start any thread (used under AppTest)."""
+    from mobile_money_system import scheduled
+    from mobile_money_system.scheduled import ScheduledPaymentManager
+
+    phone, um, tm = verified_user
+    spm = ScheduledPaymentManager(um, tm)
+    scheduled.start_scheduler(spm, tick_seconds=0)
+    assert scheduled._scheduler_thread is None

@@ -2,6 +2,7 @@ import contextlib
 import csv
 import datetime
 import html
+import os
 import re
 import time
 from decimal import Decimal
@@ -16,7 +17,7 @@ from models import utcnow
 from notifications import NotificationService
 from pdfdoc import build_pdf, receipt_pdf
 from privacy import PrivacyManager, export_to_csv
-from scheduled import ScheduledPaymentManager
+from scheduled import ScheduledPaymentManager, start_scheduler
 from sessions import SessionManager
 from streamlit_option_menu import option_menu
 from styles import get_custom_css
@@ -120,8 +121,12 @@ privacy_manager = st.session_state.privacy_manager
 
 # --- Scheduler tick: execute due scheduled/standing-order payments ---
 # Rows are claimed atomically before execution, so running this on every app
-# run is safe and can never double-fire a payment.
+# run is safe and can never double-fire a payment. A process-global
+# background thread also ticks on a timer (MMS_SCHEDULER_TICK_SECONDS, default
+# 60s; set to 0 to disable) so standing orders fire even when the app is idle.
 scheduled_manager.process_due()
+start_scheduler(scheduled_manager,
+                tick_seconds=float(os.environ.get("MMS_SCHEDULER_TICK_SECONDS", "60")))
 
 # --- Integration listeners: webhooks + out-of-app notifications ---
 # Wired once per session; listeners must never break a transaction.

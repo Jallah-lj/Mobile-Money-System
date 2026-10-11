@@ -1,4 +1,3 @@
-import contextlib
 import sqlite3
 import time
 import uuid
@@ -8,12 +7,14 @@ from decimal import Decimal
 try:
     from audit import log_event
     from database import get_db, init_db, write_transaction
+    from events import EventDispatcher
     from ledger import LedgerManager
     from models import Transaction, utcnow
     from users import UserManager
 except ImportError:
     from mobile_money_system.audit import log_event
     from mobile_money_system.database import get_db, init_db, write_transaction
+    from mobile_money_system.events import EventDispatcher
     from mobile_money_system.ledger import LedgerManager
     from mobile_money_system.models import Transaction, utcnow
     from mobile_money_system.users import UserManager
@@ -40,21 +41,23 @@ class TransactionManager:
         self.ledger = LedgerManager()
         init_db()  # Ensure schema exists (safe on fresh databases)
         # Integration hook: callables invoked as listener(event, txn.to_dict())
-        # after every successful money movement. Listeners must never break a
-        # transaction — _emit swallows listener exceptions.
+        # after every successful money movement. Delivery happens on a
+        # background thread (EventDispatcher), so a slow webhook or SMTP send
+        # never delays a payment — and a broken listener never breaks a
+        # transaction.
         self.event_listeners: list = []
+        self.dispatcher = EventDispatcher(self.event_listeners)
 
         # Configuration Limits (None currently active)
 
     def _emit(self, event: str, txn: Transaction) -> None:
-        """Notify integrations (webhooks, notifications) of a transaction event."""
+        """Notify integrations (webhooks, notifications) of a transaction event.
+
+        Delivery is asynchronous — this never blocks or fails the transaction.
+        """
         if not self.event_listeners:
             return
-        payload = txn.to_dict()
-        for listener in list(self.event_listeners):
-            # a broken listener must never fail the transaction
-            with contextlib.suppress(Exception):
-                listener(event, payload)
+        self.dispatcher.emit(event, txn.to_dict())
 
     def _alert_aml(self, txn: Transaction, flag_reason: str) -> None:
         """Auto-open a high-priority admin ticket when AML flags a transaction.

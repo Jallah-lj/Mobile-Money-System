@@ -11,6 +11,8 @@ failing (e.g. insufficient funds). 'once' orders deactivate after firing.
 """
 
 import builtins
+import contextlib
+import threading
 from datetime import timedelta
 
 try:
@@ -207,3 +209,49 @@ class ScheduledPaymentManager:
                           status="SUCCESS" if ok else "FAILURE")
                 results.append({"id": sp["id"], "ok": ok, "message": msg, "status": status})
         return results
+
+
+# --- Background scheduler ----------------------------------------------------
+# The app also ticks process_due() on every run; this background thread ticks on
+# a timer so standing orders fire even when nobody has the app open. The thread
+# is process-global (started once) and daemonized; stop_scheduler() retires it.
+_scheduler_lock = threading.Lock()
+_scheduler_thread: threading.Thread | None = None
+_scheduler_stop = threading.Event()
+
+
+def start_scheduler(scheduled_manager, tick_seconds: float = 60) -> None:
+    """Start the process-global background scheduler (idempotent).
+
+    tick_seconds <= 0 disables the background scheduler (used under test).
+    """
+    global _scheduler_thread
+    if tick_seconds <= 0:
+        return
+    with _scheduler_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return
+        _scheduler_stop.clear()
+
+        def _loop():
+            while not _scheduler_stop.is_set():
+                with contextlib.suppress(Exception):
+                    scheduled_manager.process_due()
+                # Sleep in small slices so stop_scheduler() is responsive
+                for _ in range(max(1, int(tick_seconds * 10))):
+                    if _scheduler_stop.wait(0.1):
+                        return
+
+        _scheduler_thread = threading.Thread(target=_loop, daemon=True, name="mms-scheduler")
+        _scheduler_thread.start()
+
+
+def stop_scheduler(timeout: float = 5.0) -> None:
+    """Stop the background scheduler (used by tests)."""
+    global _scheduler_thread
+    _scheduler_stop.set()
+    with _scheduler_lock:
+        thread = _scheduler_thread
+        _scheduler_thread = None
+    if thread is not None:
+        thread.join(timeout=timeout)
