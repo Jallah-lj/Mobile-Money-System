@@ -12,10 +12,10 @@ operator decision, never an automatic one.
 from decimal import Decimal
 from typing import Any
 
-try:
-    from database import get_db, init_db
-except ImportError:
-    from mobile_money_system.database import get_db, init_db
+if __package__:
+    from .database import get_db, init_db
+else:
+    from database import get_db, init_db  # type: ignore[no-redef]
 
 
 class ReconciliationManager:

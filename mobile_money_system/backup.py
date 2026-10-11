@@ -10,16 +10,16 @@ import os
 import sqlite3
 from datetime import datetime
 
-try:
-    import database
-    from config import get_float, get_setting, set_setting
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    import mobile_money_system.database as database
-    from mobile_money_system.config import get_float, get_setting, set_setting
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from . import database
+    from .config import get_float, get_setting, set_setting
+    from .database import get_db, init_db
+    from .models import utcnow
+else:
+    import database  # type: ignore[no-redef]
+    from config import get_float, get_setting, set_setting  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 BACKUP_DIR = os.environ.get("MMS_BACKUP_DIR", "backups")
 

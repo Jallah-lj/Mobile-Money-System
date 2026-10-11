@@ -7,10 +7,10 @@ naive-UTC ISO strings stored in the transactions table (string-comparable).
 
 from decimal import Decimal
 
-try:
-    from models import Transaction, utcnow
-except ImportError:
-    from mobile_money_system.models import Transaction, utcnow
+if __package__:
+    from .models import Transaction, utcnow
+else:
+    from models import Transaction, utcnow  # type: ignore[no-redef]
 
 # Types that credit the receiver / debit the sender
 CREDIT_TYPES = ("TRANSFER", "DEPOSIT", "ADMIN_CREDIT", "REVERSAL")

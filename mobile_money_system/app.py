@@ -10,9 +10,11 @@ from io import StringIO
 
 import streamlit as st
 from analytics import budget_status, monthly_statement, monthly_totals, spending_by_category, top_counterparties
-from audit import get_audit_logs
+from audit import get_audit_logs, log_event
 from backup import BackupManager
 from beneficiaries import BeneficiaryManager
+from billers import CATEGORIES, BillerManager
+from config import all_settings, get_decimal, get_setting, set_setting
 from i18n import get_text
 from logging_config import log_structured, setup_logging
 from models import utcnow
@@ -26,8 +28,14 @@ from sessions import SessionManager
 from streamlit_option_menu import option_menu
 from styles import get_custom_css
 from tickets import TicketManager
-from transactions import BILL_FEE, TRANSFER_FEE_RATE, WITHDRAWAL_FEE_RATE, TransactionManager
-from users import HIGH_VALUE_STEPUP_THRESHOLD, UserManager
+from transactions import TransactionManager
+from users import (
+    HIGH_VALUE_STEPUP_THRESHOLD,
+    LOCKOUT_DURATION_SECONDS,
+    LOCKOUT_WINDOW_SECONDS,
+    MAX_LOGIN_ATTEMPTS,
+    UserManager,
+)
 from webhooks import WebhookManager
 
 
@@ -119,6 +127,9 @@ if 'reconcile_manager' not in st.session_state:
 if 'retention_manager' not in st.session_state:
     st.session_state.retention_manager = RetentionManager()
 
+if 'biller_manager' not in st.session_state:
+    st.session_state.biller_manager = BillerManager()
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
@@ -134,6 +145,7 @@ privacy_manager = st.session_state.privacy_manager
 backup_manager = st.session_state.backup_manager
 reconcile_manager = st.session_state.reconcile_manager
 retention_manager = st.session_state.retention_manager
+biller_manager = st.session_state.biller_manager
 
 # --- Structured operational logging (JSON lines to logs/mms.log) ---
 setup_logging()
@@ -178,6 +190,7 @@ def logout_user():
         session_manager.revoke(st.session_state.session_token)
         del st.session_state.session_token
     st.session_state.current_user_phone = None
+    st.session_state.pop('impersonator_phone', None)
     if 'otp_verified' in st.session_state:
         del st.session_state.otp_verified
     st.rerun()
@@ -192,7 +205,9 @@ if st.session_state.current_user_phone:
     st.session_state.last_activity = time.time()
 
 # --- Server-side session validation: a revoked session ends the login ---
-if st.session_state.current_user_phone:
+# (Skipped while an admin is impersonating a user — the admin's own session
+# record stays authoritative and is restored on exit.)
+if st.session_state.current_user_phone and not st.session_state.get('impersonator_phone'):
     _token = st.session_state.get('session_token')
     if not _token:
         # First run after login (or a seeded/test session): create the record
@@ -387,11 +402,14 @@ else:
         st.sidebar.write(f"**Admin:** {current_user.name}")
 
         # Impersonation Exit
-        if st.session_state.get('impersonating', False):
+        if st.session_state.get('impersonator_phone'):
              st.sidebar.warning("⚠️ Impersonation Active")
              if st.sidebar.button("Exit Impersonation", type="primary", width="stretch"):
-                 del st.session_state.user
-                 del st.session_state.impersonating
+                 log_event(st.session_state.impersonator_phone, "IMPERSONATE_STOP",
+                           target=st.session_state.current_user_phone,
+                           details="Admin exited impersonation")
+                 st.session_state.current_user_phone = st.session_state.impersonator_phone
+                 del st.session_state.impersonator_phone
                  st.rerun()
 
         if st.sidebar.button(TR("logout"), key="admin_logout", width="stretch"):
@@ -493,12 +511,29 @@ else:
                     with col_act3:
                          st.markdown("**Support**")
                          if st.button("Impersonate User", width="stretch", key="btn_imp"):
-                             st.session_state.user = target_u
-                             st.session_state.impersonating = True
+                             # Impersonation keeps the admin's own session; the
+                             # target phone becomes the active user until exit.
+                             st.session_state.impersonator_phone = current_user.phone
+                             st.session_state.current_user_phone = target_u.phone
+                             log_event(current_user.phone, "IMPERSONATE_START", target=target_u.phone,
+                                       details="Admin started impersonating this user")
                              st.rerun()
 
-                         if st.button("HARD DELETE", type="primary", width="stretch"):
-                             st.error("Feature valid but dangerous. Simulated delete.")
+                         hard_del_confirm = st.checkbox(
+                             "I understand this permanently deletes the account (records are pseudonymized)",
+                             key=f"hard_del_confirm_{target_u.phone}")
+                         if st.button("HARD DELETE", type="primary", width="stretch", key="btn_del"):
+                             if not hard_del_confirm:
+                                 st.error("Tick the confirmation checkbox first.")
+                             else:
+                                 ok, msg = privacy_manager.admin_delete_user(
+                                     target_u.phone, current_user.phone, "admin-initiated")
+                                 if ok:
+                                     st.success(msg)
+                                     time.sleep(1)
+                                     st.rerun()
+                                 else:
+                                     st.error(msg)
 
             st.markdown("### Pending Account Deletion Requests")
             pending_dels = privacy_manager.pending_deletions()
@@ -583,19 +618,39 @@ else:
                  st.bar_chart([t.amount for t in revenue_tx])
 
             with col_b2:
-                 st.markdown("### Utility Providers")
-                 # Mock Config
-                 providers = [
-                     {"name": "KPLC Power", "cat": "Electricity", "fee": "1.5%"},
-                     {"name": "Nairobi Water", "cat": "Water", "fee": "0.0%"},
-                     {"name": "Zuku Fiber", "cat": "Internet", "fee": "2.0%"}
-                 ]
-                 st.table(providers)
-                 with st.expander("Add Provider"):
-                     st.text_input("Provider Name")
-                     st.selectbox("Category", ["Electricity", "Water", "Internet", "Gov"])
-                     st.text_input("Fee %")
-                     st.button("Save Provider (Mock)")
+                 st.markdown("### Registered Billers")
+                 st.caption("Users pick these on the Pay Bills page.")
+                 with st.form("biller_form"):
+                     b_name = st.text_input("Biller Name", placeholder="e.g. LEC Power")
+                     b_cat = st.selectbox("Category", list(CATEGORIES), key="biller_cat")
+                     b_id = st.text_input("Biller ID / account prefix", placeholder="e.g. MTR-")
+                     b_note = st.text_input("Fee note (optional)", placeholder="e.g. 0.5% service fee")
+                     if st.form_submit_button("Add Biller"):
+                         ok, msg = biller_manager.add(b_name, b_cat, b_id, b_note)
+                         if ok:
+                             st.success(msg)
+                             time.sleep(1)
+                             st.rerun()
+                         else:
+                             st.error(msg)
+                 billers = biller_manager.list(active_only=False)
+                 if billers:
+                     for b in billers:
+                         col_p1, col_p2, col_p3 = st.columns([3, 2, 2])
+                         with col_p1:
+                             st.write(f"**{b['name']}** — {b['category']} — {b['biller_id']}"
+                                      + (f" — {b['fee_note']}" if b['fee_note'] else ""))
+                         with col_p2:
+                             st.caption("active" if b["active"] else "inactive")
+                         with col_p3:
+                             if b["active"] and st.button("Deactivate", key=f"bill_off_{b['id']}"):
+                                 biller_manager.deactivate(b["id"])
+                                 st.rerun()
+                             if st.button("Delete", key=f"bill_del_{b['id']}", type="primary"):
+                                 biller_manager.remove(b["id"])
+                                 st.rerun()
+                 else:
+                     st.info("No billers registered yet.")
 
         # ---------------- SECURITY TAB ----------------
         elif selected_adm == "Security":
@@ -609,11 +664,35 @@ else:
             else:
                 st.success("No active security alerts.")
 
-            st.markdown("### Fraud Rules Configuration")
-            st.checkbox("Block transfers > $500 to new recipients", value=True)
-            st.checkbox("Auto-freeze account after 3 failed PIN attempts", value=True)
-            st.checkbox("IP Geofencing (Allow only specific countries)", value=False)
-            st.button("Update Security Rules")
+            st.markdown("### AML Rules")
+            st.caption("Transactions matching these rules are flagged and escalated to a high-priority admin ticket.")
+            _sec_settings = all_settings()
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                cfg_aml_large = st.number_input("Large-amount threshold ($)", min_value=0.0, step=500.0,
+                                                value=float(_sec_settings["aml_large_amount_threshold"]),
+                                                key="cfg_aml_large")
+            with col_f2:
+                cfg_aml_vcount = st.number_input("Velocity: max txns in window", min_value=1, max_value=100,
+                                                 value=int(_sec_settings["aml_velocity_count"]),
+                                                 key="cfg_aml_vcount")
+            with col_f3:
+                cfg_aml_vwin = st.number_input("Velocity window (minutes)", min_value=1, max_value=1440,
+                                               value=int(_sec_settings["aml_velocity_window_minutes"]),
+                                               key="cfg_aml_vwin")
+            if st.button("Update Security Rules"):
+                set_setting("aml_large_amount_threshold", str(cfg_aml_large))
+                set_setting("aml_velocity_count", str(cfg_aml_vcount))
+                set_setting("aml_velocity_window_minutes", str(cfg_aml_vwin))
+                log_structured("AML_RULES_UPDATED", admin=current_user.phone,
+                               large_threshold=cfg_aml_large, velocity_count=cfg_aml_vcount,
+                               velocity_window=cfg_aml_vwin)
+                st.success("AML rules updated")
+                time.sleep(1)
+                st.rerun()
+            st.caption(f"Login lockout (enforced, database-backed): {MAX_LOGIN_ATTEMPTS} failed attempts "
+                       f"within {LOCKOUT_WINDOW_SECONDS // 60} minutes locks the account for "
+                       f"{LOCKOUT_DURATION_SECONDS // 60} minutes.")
 
         # ---------------- AUDIT TAB ----------------
         elif selected_adm == "Audit":
@@ -684,15 +763,32 @@ else:
             st.selectbox("System Status", ["Operational", "Maintenance Mode", "ReadOnly"])
 
             st.markdown("**Fee Configuration**")
+            st.caption("Operator pricing. Defaults keep the platform free to use: 0% transfer, 0.5% withdrawal, $0.25 per bill.")
+            _settings = all_settings()
             col_sys1, col_sys2 = st.columns(2)
             with col_sys1:
-                st.number_input("P2P Transfer Fee (%)", value=1.0)
-                st.number_input("Withdrawal Fee (%)", value=2.0)
+                cfg_transfer_fee = st.number_input("P2P Transfer Fee Rate", min_value=0.0, max_value=0.2,
+                                                   step=0.001, value=float(_settings["transfer_fee_rate"]),
+                                                   format="%.3f", key="cfg_transfer_fee",
+                                                   help="Fraction of the amount: 0.005 = 0.5%")
+                cfg_withdrawal_fee = st.number_input("Withdrawal Fee Rate", min_value=0.0, max_value=0.2,
+                                                     step=0.001, value=float(_settings["withdrawal_fee_rate"]),
+                                                     format="%.3f", key="cfg_withdrawal_fee",
+                                                     help="Fraction of the amount: 0.005 = 0.5%")
             with col_sys2:
-                 st.number_input("Bill Payment Fee (Fixed)", value=0.5)
-                 st.number_input("Forex Margin (%)", value=2.5)
-
-            st.button("Save System Config")
+                 cfg_bill_fee = st.number_input("Bill Payment Fee (Flat $)", min_value=0.0, max_value=100.0,
+                                               step=0.05, value=float(_settings["bill_fee_flat"]),
+                                               key="cfg_bill_fee")
+            if st.button("Save System Config"):
+                set_setting("transfer_fee_rate", str(cfg_transfer_fee))
+                set_setting("withdrawal_fee_rate", str(cfg_withdrawal_fee))
+                set_setting("bill_fee_flat", str(cfg_bill_fee))
+                log_structured("FEE_CONFIG_UPDATED", admin=current_user.phone,
+                               transfer_fee=cfg_transfer_fee, withdrawal_fee=cfg_withdrawal_fee,
+                               bill_fee=cfg_bill_fee)
+                st.success("Fee configuration saved")
+                time.sleep(1)
+                st.rerun()
 
             st.markdown("---")
             st.markdown("### Webhooks (Event Integrations)")
@@ -803,7 +899,6 @@ else:
             st.markdown("### 🧹 Data Retention")
             st.caption("Prunes old rows (audit log, sessions, deliveries, OTPs, rate-limit hits, idempotency keys, lockouts) "
                        "according to the retention periods below. Days; 0 = keep forever.")
-            from config import all_settings, get_setting, set_setting
             settings = all_settings()
             ret_keys = [
                 ("retention_days_audit_log", "Audit log"),
@@ -912,15 +1007,14 @@ else:
     # Sidebar
     with st.sidebar:
         # Impersonation Exit for Admin
-        if st.session_state.get('impersonating', False):
+        if st.session_state.get('impersonator_phone'):
             st.error("⚠️ IMPERSONATING USER")
             if st.button("EXIT IMPERSONATION", type="primary", width="stretch"):
-                # We need to restore the admin session.
-                # Ideally we stored the admin user in session state too, but simply clearing 'user' forces login.
-                # Retaining the login would require storing 'admin_user' separately.
-                # For this prototype, forcing re-login is safer/easier.
-                del st.session_state.user
-                del st.session_state.impersonating
+                log_event(st.session_state.impersonator_phone, "IMPERSONATE_STOP",
+                          target=st.session_state.current_user_phone,
+                          details="Admin exited impersonation")
+                st.session_state.current_user_phone = st.session_state.impersonator_phone
+                del st.session_state.impersonator_phone
                 st.rerun()
             st.markdown("---")
 
@@ -1119,10 +1213,11 @@ else:
              st.subheader("Verify Transaction Details")
              st.info("Please review the details below carefully before confirming.")
 
-             # Fee Calculation (0% transfer fee — the platform is free to use)
-             fee = data['amount'] * float(TRANSFER_FEE_RATE)
+             # Fee Calculation (operator-configurable; default 0% — platform is free to use)
+             transfer_fee_rate = get_decimal("transfer_fee_rate")
+             fee = data['amount'] * transfer_fee_rate
              total_deduction = data['amount'] + fee
-             fee_label = "0%"
+             fee_label = f"{float(transfer_fee_rate) * 100:g}%"
 
              with st.container():
                  st.markdown(f"""
@@ -1210,11 +1305,29 @@ else:
         if not st.session_state.review_mode:
             st.subheader(TR("pay_bills"))
 
+            saved_billers = biller_manager.list()
+            biller_choice: str | None = None
+            if saved_billers:
+                biller_choice = st.selectbox(
+                    "Saved Billers (optional — pick one or choose a category below)",
+                    ["— choose a saved biller —"] + [f"{b['name']} ({b['category']})" for b in saved_billers],
+                    key="saved_biller_pick")
+            else:
+                biller_choice = None  # already None
+
             bill_type = st.selectbox("Select Biller Category", ["Airtime & Data", "Electricity (Prepaid)", "Water Utility", "Internet Subscription"])
 
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                if bill_type == "Airtime & Data":
+                if biller_choice and biller_choice != "— choose a saved biller —":
+                    saved = next(b for b in saved_billers if f"{b['name']} ({b['category']})" == biller_choice)
+                    biller_name = saved["name"]
+                    biller_id = saved["biller_id"]
+                    st.caption(f"Paying {saved['name']} • {saved['category']}"
+                               + (f" • {saved['fee_note']}" if saved["fee_note"] else ""))
+                    st.text_input("Biller", value=biller_name, disabled=True)
+                    st.text_input("Account/customer ID", value=biller_id, disabled=True)
+                elif bill_type == "Airtime & Data":
                     biller_id = st.text_input(TR("phone"), value=current_user.phone)
                     biller_name = "Telecel/Lonestar"
                 elif bill_type == "Electricity (Prepaid)":
@@ -1246,9 +1359,10 @@ else:
              data = st.session_state.review_data
              st.subheader("Confirm Bill Payment")
 
-             fee = float(BILL_FEE)
+             bill_fee = get_decimal("bill_fee_flat")
+             fee = bill_fee
              total = data['amount'] + fee
-             fee_label = "$0.25"
+             fee_label = f"${float(bill_fee):g}"
 
              with st.container():
                  st.markdown(f"""
@@ -1485,10 +1599,11 @@ else:
              st.subheader(TR("confirm"))
              st.info("Please confirm the withdrawal details below.")
 
-             # Calculate Fee (0.5% withdrawal fee)
-             fee = data['amount'] * float(WITHDRAWAL_FEE_RATE)
+             # Calculate Fee (operator-configurable; default 0.5%)
+             withdrawal_fee_rate = get_decimal("withdrawal_fee_rate")
+             fee = data['amount'] * withdrawal_fee_rate
              total_deduction = data['amount'] + fee
-             fee_label = "0.5%"
+             fee_label = f"{float(withdrawal_fee_rate) * 100:g}%"
 
              with st.container():
                  st.markdown(f"""

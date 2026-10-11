@@ -4,20 +4,22 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 
-try:
-    from audit import log_event
-    from database import get_db, init_db, write_transaction
-    from events import EventDispatcher
-    from ledger import LedgerManager
-    from models import Transaction, utcnow
-    from users import UserManager
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db, write_transaction
-    from mobile_money_system.events import EventDispatcher
-    from mobile_money_system.ledger import LedgerManager
-    from mobile_money_system.models import Transaction, utcnow
-    from mobile_money_system.users import UserManager
+if __package__:
+    from .audit import log_event
+    from .config import get_decimal, get_int
+    from .database import get_db, init_db, write_transaction
+    from .events import EventDispatcher
+    from .ledger import LedgerManager
+    from .models import Transaction, utcnow
+    from .users import UserManager
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from config import get_decimal, get_int  # type: ignore[no-redef]
+    from database import get_db, init_db, write_transaction  # type: ignore[no-redef]
+    from events import EventDispatcher  # type: ignore[no-redef]
+    from ledger import LedgerManager  # type: ignore[no-redef]
+    from models import Transaction, utcnow  # type: ignore[no-redef]
+    from users import UserManager  # type: ignore[no-redef]
 
 # --- Universal pricing: the platform is free to use --------------------------
 # There is no paid tier — every user gets the same rates and limits.
@@ -65,10 +67,10 @@ class TransactionManager:
         Alerting must never break the transaction itself.
         """
         try:
-            try:
-                from tickets import TicketManager
-            except ImportError:
-                from mobile_money_system.tickets import TicketManager
+            if __package__:
+                from .tickets import TicketManager
+            else:
+                from tickets import TicketManager  # type: ignore[no-redef]
             TicketManager().create(
                 "SYSTEM",
                 f"AML flag: {txn.type} {txn.amount}",
@@ -140,6 +142,16 @@ class TransactionManager:
     def _entries_balanced(entries) -> bool:
         """Double-entry invariant: every posted batch must sum to zero."""
         return sum((e.amount for e in entries), Decimal("0.0")) == Decimal("0.0")
+
+    @staticmethod
+    def _fee_config() -> tuple[Decimal, Decimal, Decimal]:
+        """Operator pricing from app_settings (defaults keep the platform free:
+        0% transfer, 0.5% withdrawal, $0.25 flat per bill)."""
+        return (
+            get_decimal("transfer_fee_rate"),
+            get_decimal("withdrawal_fee_rate"),
+            get_decimal("bill_fee_flat"),
+        )
 
     def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
         t = self._make_txn(sender, receiver, amount, t_type, description=description,
@@ -295,21 +307,26 @@ class TransactionManager:
         flagged = False
         reason = []
 
+        # Thresholds are operator-configurable (admin Security tab)
+        large_threshold = get_decimal("aml_large_amount_threshold")
+        velocity_count = get_int("aml_velocity_count", 5)
+        velocity_window_minutes = get_int("aml_velocity_window_minutes", 5)
+
         # 1. Large Transaction
-        if amount >= 10000:
+        if amount >= large_threshold:
             flagged = True
-            reason.append("Large amount (>10k)")
+            reason.append(f"Large amount (>={large_threshold})")
 
         # 2. Velocity Check (Rapid Movement)
         now = utcnow()
-        time_window = (now - timedelta(minutes=5)).isoformat()
+        time_window = (now - timedelta(minutes=velocity_window_minutes)).isoformat()
 
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM transactions WHERE sender_phone = ? AND timestamp > ?", (phone, time_window))
             count = cursor.fetchone()[0]
 
-        if count >= 5:
+        if count >= velocity_count:
             flagged = True
             reason.append("Rapid movement (Velocity)")
 
@@ -382,7 +399,8 @@ class TransactionManager:
             log_event(phone, "WITHDRAWAL", target=phone, details=f"Blocked: {msg}", status="BLOCKED")
             return False, msg
 
-        fee = amount_decimal * WITHDRAWAL_FEE_RATE
+        _transfer_fee, withdrawal_fee_rate, _bill_fee = self._fee_config()
+        fee = amount_decimal * withdrawal_fee_rate
         total_deduction = amount_decimal + fee
 
         if user.balance < total_deduction:
@@ -488,7 +506,8 @@ class TransactionManager:
                       details=f"Blocked: {msg} ({amount_decimal})", status="BLOCKED")
             return False, msg, None
 
-        fee = amount_decimal * TRANSFER_FEE_RATE
+        transfer_fee_rate, _withdrawal_fee, _bill_fee = self._fee_config()
+        fee = amount_decimal * transfer_fee_rate
         total_deduction = amount_decimal + fee
 
         if sender.balance < total_deduction:
@@ -581,7 +600,8 @@ class TransactionManager:
             log_event(phone, "BILL_PAYMENT", target=biller_id, details=f"Blocked: {msg}", status="BLOCKED")
             return False, msg
 
-        fee = BILL_FEE
+        _transfer_fee, _withdrawal_fee, bill_fee = self._fee_config()
+        fee = bill_fee
         total_deduction = amount_decimal + fee
 
         if user.balance < total_deduction:

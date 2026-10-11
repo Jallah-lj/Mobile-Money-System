@@ -9,12 +9,12 @@ purely client-side logout leaves open.
 
 import uuid
 
-try:
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from .database import get_db, init_db
+    from .models import utcnow
+else:
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 
 class SessionManager:

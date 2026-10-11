@@ -9,14 +9,14 @@ admin System tab, and can be wired to the background scheduler.
 import time
 from datetime import timedelta
 
-try:
-    from config import get_int, set_setting
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    from mobile_money_system.config import get_int, set_setting
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from .config import get_int, set_setting
+    from .database import get_db, init_db
+    from .models import utcnow
+else:
+    from config import get_int, set_setting  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 
 class RetentionManager:

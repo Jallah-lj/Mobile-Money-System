@@ -15,18 +15,18 @@ import contextlib
 import threading
 from datetime import timedelta
 
-try:
-    from audit import log_event
-    from database import get_db, init_db
-    from models import utcnow
-    from transactions import TransactionManager
-    from users import UserManager
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.transactions import TransactionManager
-    from mobile_money_system.users import UserManager
+if __package__:
+    from .audit import log_event
+    from .database import get_db, init_db
+    from .models import utcnow
+    from .transactions import TransactionManager
+    from .users import UserManager
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
+    from transactions import TransactionManager  # type: ignore[no-redef]
+    from users import UserManager  # type: ignore[no-redef]
 
 FREQUENCIES = ("once", "daily", "weekly", "monthly")
 PAYMENT_TYPES = ("TRANSFER", "BILL_PAYMENT")

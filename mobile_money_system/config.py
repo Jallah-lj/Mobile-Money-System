@@ -8,12 +8,12 @@ configuration. Universal pricing defaults keep the platform free to use.
 import sqlite3
 from decimal import Decimal, InvalidOperation
 
-try:
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from .database import get_db, init_db
+    from .models import utcnow
+else:
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 # Built-in defaults — used when a key has never been stored.
 DEFAULTS = {

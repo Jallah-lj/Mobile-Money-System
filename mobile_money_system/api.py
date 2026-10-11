@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
-try:
+if __package__:
     from .audit import get_audit_logs
     from .database import get_db, write_transaction
     from .logging_config import setup_logging
@@ -26,8 +26,7 @@ try:
     from .privacy import PrivacyManager
     from .transactions import TransactionManager
     from .users import UserManager
-except ImportError:
-    # Dual import path: this module is also runnable as a top-level script module.
+else:
     from audit import get_audit_logs  # type: ignore[no-redef]
     from database import get_db, write_transaction  # type: ignore[no-redef]
     from logging_config import setup_logging  # type: ignore[no-redef]

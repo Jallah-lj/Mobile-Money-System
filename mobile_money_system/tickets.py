@@ -6,14 +6,14 @@ Support tab. Every mutation is audit-logged.
 """
 
 
-try:
-    from audit import log_event
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from .audit import log_event
+    from .database import get_db, init_db
+    from .models import utcnow
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
 TICKET_CATEGORIES = ("payment", "account", "kyc", "security", "other")

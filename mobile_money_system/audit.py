@@ -7,12 +7,12 @@ code — the log is a compliance trail.
 
 import uuid
 
-try:
-    from database import get_db
-    from models import AuditEntry, utcnow
-except ImportError:
-    from mobile_money_system.database import get_db
-    from mobile_money_system.models import AuditEntry, utcnow
+if __package__:
+    from .database import get_db
+    from .models import AuditEntry, utcnow
+else:
+    from database import get_db  # type: ignore[no-redef]
+    from models import AuditEntry, utcnow  # type: ignore[no-redef]
 
 
 def log_event(actor_phone: str, action: str, target: str = "",

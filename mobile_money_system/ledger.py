@@ -2,12 +2,12 @@ import time
 import uuid
 from decimal import Decimal
 
-try:
-    from database import get_db
-    from models import LedgerEntry, utcnow
-except ImportError:
-    from mobile_money_system.database import get_db
-    from mobile_money_system.models import LedgerEntry, utcnow
+if __package__:
+    from .database import get_db
+    from .models import LedgerEntry, utcnow
+else:
+    from database import get_db  # type: ignore[no-redef]
+    from models import LedgerEntry, utcnow  # type: ignore[no-redef]
 
 class LedgerManager:
     """

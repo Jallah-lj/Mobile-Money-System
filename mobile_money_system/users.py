@@ -5,16 +5,16 @@ import time
 import bcrypt
 import phonenumbers
 
-try:
-    from audit import log_event
-    from database import get_db, init_db
-    from models import User
-    from models import utcnow as models_utcnow_iso
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import User
-    from mobile_money_system.models import utcnow as models_utcnow_iso
+if __package__:
+    from .audit import log_event
+    from .database import get_db, init_db
+    from .models import User
+    from .models import utcnow as models_utcnow_iso
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import User  # type: ignore[no-redef]
+    from models import utcnow as models_utcnow_iso  # type: ignore[no-redef]
 
 # --- Login protection configuration ---
 MAX_LOGIN_ATTEMPTS = 5          # Failed attempts before lockout

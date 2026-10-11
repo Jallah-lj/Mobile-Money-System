@@ -17,14 +17,14 @@ Every action is audit-logged.
 
 import hashlib
 
-try:
-    from audit import log_event
-    from database import get_db, init_db
-    from models import utcnow
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
+if __package__:
+    from .audit import log_event
+    from .database import get_db, init_db, write_transaction
+    from .models import utcnow
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from database import get_db, init_db, write_transaction  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
 
 DELETION_STATUSES = ("pending", "approved", "rejected")
 
@@ -121,30 +121,37 @@ class PrivacyManager:
                   details=f"for {req['phone'] if req else '?'}: {note[:200]}")
         return True, "Deletion request rejected. The account stays active."
 
+    @staticmethod
+    def _purge_user_data(cursor, phone: str) -> str:
+        """Delete a user's personal data and pseudonymize their financial
+        records. Runs inside the caller's transaction. Returns the pseudonym."""
+        pseudo = pseudonymize(phone)
+        # 1. Pseudonymize retained financial/compliance records
+        cursor.execute(
+            "UPDATE transactions SET sender_phone = ? WHERE sender_phone = ?", (pseudo, phone))
+        cursor.execute(
+            "UPDATE transactions SET receiver_phone = ? WHERE receiver_phone = ?", (pseudo, phone))
+        cursor.execute(
+            "UPDATE audit_log SET actor_phone = ? WHERE actor_phone = ?", (pseudo, phone))
+        cursor.execute(
+            "UPDATE ledger SET account_id = ? WHERE account_id = ?", (pseudo, phone))
+        # 2. Delete personal data outright
+        for table, col in (("users", "phone"), ("beneficiaries", "owner_phone"),
+                           ("scheduled_payments", "owner_phone"), ("tickets", "phone"),
+                           ("notification_channels", "phone"), ("sessions", "phone")):
+            cursor.execute(f"DELETE FROM {table} WHERE {col} = ?", (phone,))
+        return pseudo
+
     def approve_deletion(self, request_id: int, admin_phone: str) -> tuple[bool, str]:
         """Approve a deletion: remove the account, pseudonymize financial records."""
         req = self.get_request(request_id)
         if not req or req["status"] != "pending":
             return False, "Request not found or already reviewed."
         phone = req["phone"]
-        pseudo = pseudonymize(phone)
         now = utcnow().isoformat()
         with get_db() as conn:
             cursor = conn.cursor()
-            # 1. Pseudonymize retained financial/compliance records
-            cursor.execute(
-                "UPDATE transactions SET sender_phone = ? WHERE sender_phone = ?", (pseudo, phone))
-            cursor.execute(
-                "UPDATE transactions SET receiver_phone = ? WHERE receiver_phone = ?", (pseudo, phone))
-            cursor.execute(
-                "UPDATE audit_log SET actor_phone = ? WHERE actor_phone = ?", (pseudo, phone))
-            cursor.execute(
-                "UPDATE ledger SET account_id = ? WHERE account_id = ?", (pseudo, phone))
-            # 2. Delete personal data outright
-            for table, col in (("users", "phone"), ("beneficiaries", "owner_phone"),
-                               ("scheduled_payments", "owner_phone"), ("tickets", "phone"),
-                               ("notification_channels", "phone"), ("sessions", "phone")):
-                cursor.execute(f"DELETE FROM {table} WHERE {col} = ?", (phone,))
+            pseudo = self._purge_user_data(cursor, phone)
             # 3. Close the request
             cursor.execute('''
             UPDATE account_deletions
@@ -154,6 +161,23 @@ class PrivacyManager:
             conn.commit()
         log_event(admin_phone, "DELETION_APPROVED", target=phone,
                   details=f"Account deleted; records pseudonymized as {pseudo}")
+        return True, f"Account {phone} deleted. Financial records were pseudonymized ({pseudo})."
+
+    def admin_delete_user(self, phone: str, admin_phone: str, reason: str = "") -> tuple[bool, str]:
+        """Admin-initiated account deletion (no user request needed).
+
+        Same data rules as an approved GDPR request: personal data is deleted,
+        financial records are pseudonymized. Runs atomically.
+        """
+        with get_db() as conn:
+            cursor = conn.cursor()
+            row = cursor.execute("SELECT phone FROM users WHERE phone = ?", (phone,)).fetchone()
+            if not row:
+                return False, "User not found"
+        with write_transaction() as conn:
+            pseudo = self._purge_user_data(conn.cursor(), phone)
+        log_event(admin_phone, "ADMIN_DELETE_USER", target=phone,
+                  details=f"Admin-initiated deletion; records pseudonymized as {pseudo}. Reason: {reason[:200]}")
         return True, f"Account {phone} deleted. Financial records were pseudonymized ({pseudo})."
 
     def cancel_deletion_request(self, phone: str, request_id: int) -> bool:

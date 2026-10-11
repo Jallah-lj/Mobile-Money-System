@@ -298,6 +298,19 @@ def init_db():
         )
         ''')
 
+        # Billers Table (registered utility providers for bill payments)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS billers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            biller_id TEXT NOT NULL,
+            fee_note TEXT DEFAULT '',
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
         # Backups Registry (snapshot metadata for the admin backup tool)
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS backups (
@@ -328,6 +341,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_notif_channels_phone ON notification_channels(phone)",
             "CREATE INDEX IF NOT EXISTS idx_login_attempts_phone ON login_attempts(phone)",
             "CREATE INDEX IF NOT EXISTS idx_rate_limit_key ON rate_limit_hits(key)",
+            "CREATE INDEX IF NOT EXISTS idx_billers_active ON billers(active)",
         ]
         for _sql in indexes:
             cursor.execute(_sql)

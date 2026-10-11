@@ -7,16 +7,16 @@ registered — the UI flags whether the recipient is a known user.
 
 import builtins
 
-try:
-    from audit import log_event
-    from database import get_db, init_db
-    from models import utcnow
-    from users import UserManager
-except ImportError:
-    from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
-    from mobile_money_system.models import utcnow
-    from mobile_money_system.users import UserManager
+if __package__:
+    from .audit import log_event
+    from .database import get_db, init_db
+    from .models import utcnow
+    from .users import UserManager
+else:
+    from audit import log_event  # type: ignore[no-redef]
+    from database import get_db, init_db  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
+    from users import UserManager  # type: ignore[no-redef]
 
 
 class BeneficiaryManager:
