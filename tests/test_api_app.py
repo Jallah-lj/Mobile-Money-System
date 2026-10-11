@@ -50,7 +50,8 @@ def _login(client, phone, pin="1234") -> str:
 def test_register_login_me_flow(db_path):
     client, api_module = _client()
     r = client.post("/auth/register", json={
-        "phone": ALICE, "name": "Alice", "pin": "1234", "sec_q": "q", "sec_a": "a"})
+        "phone": ALICE, "name": "Alice", "pin": "1234", "sec_q": "q", "sec_a": "a",
+        "accept_terms": True, "accept_privacy": True})
     assert r.status_code == 200
     api_module.user_mgr.set_two_factor(ALICE, False)  # PIN-only login for this test
 

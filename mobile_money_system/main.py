@@ -1,6 +1,7 @@
 import getpass
 import os
 
+from privacy import PrivacyManager
 from transactions import TransactionManager
 from users import UserManager
 
@@ -43,8 +44,14 @@ def main():
                     sec_q = questions[q_idx]
                     sec_a = input("Enter Answer: ")
 
-                    success, message = user_manager.register(phone, name, pin, sec_q, sec_a)
-                    print(message)
+                    accept = input("Do you accept the Terms of Service and Privacy Policy? (y/n): ").strip().lower()
+                    if accept not in ("y", "yes"):
+                        print("Registration cancelled — acceptance of the Terms and Privacy Policy is required.")
+                    else:
+                        success, message = user_manager.register(phone, name, pin, sec_q, sec_a)
+                        if success:
+                            PrivacyManager().accept_current_policies(user_manager.format_phone(phone))
+                        print(message)
                 else:
                     print("Invalid selection.")
             except ValueError:

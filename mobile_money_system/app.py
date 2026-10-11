@@ -379,13 +379,28 @@ if not current_user:
                 ])
                 sec_a = st.text_input("Answer")
 
+                st.markdown("---")
+                with st.expander("Terms of Service & Privacy Policy"):
+                    policy_doc = privacy_manager.get_active_document("privacy_policy")
+                    terms_doc = privacy_manager.get_active_document("terms_of_service")
+                    if policy_doc:
+                        st.caption(f"Privacy Policy v{policy_doc['version']} — published {policy_doc['published_at'][:10]}")
+                        st.markdown(policy_doc["content"])
+                    if terms_doc:
+                        st.caption(f"Terms of Service v{terms_doc['version']} — published {terms_doc['published_at'][:10]}")
+                        st.markdown(terms_doc["content"])
+                accept_legal = st.checkbox("I accept the Terms of Service and the Privacy Policy")
+
                 reg_submitted = st.form_submit_button(TR("register"))
                 if reg_submitted:
                     if not validate_phone(new_phone):
                         st.error("Invalid Phone Number (Use international format e.g., +234...)")
+                    elif not accept_legal:
+                        st.error("You must accept the Terms of Service and the Privacy Policy to register.")
                     elif new_name and new_phone and len(new_pin) == 4 and new_pin.isdigit() and sec_a:
                         success, msg = user_manager.register(new_phone, new_name, new_pin, sec_q, sec_a, currency)
                         if success:
+                            privacy_manager.accept_current_policies(user_manager.format_phone(new_phone))
                             st.success(f"Success! {msg}. Please Login.")
                         else:
                             st.error(f"Error: {msg}")
@@ -693,6 +708,88 @@ else:
             st.caption(f"Login lockout (enforced, database-backed): {MAX_LOGIN_ATTEMPTS} failed attempts "
                        f"within {LOCKOUT_WINDOW_SECONDS // 60} minutes locks the account for "
                        f"{LOCKOUT_DURATION_SECONDS // 60} minutes.")
+
+            st.markdown("---")
+            st.markdown("### Data Breach Register")
+            st.caption("Record and track personal-data breaches (GDPR Art. 33 / Rwanda Law No. 058/2021). "
+                       "The authority-report timestamp supports the 72-hour notification rule.")
+            with st.form("breach_form"):
+                b_desc = st.text_area("What happened?")
+                col_b1, col_b2, col_b3 = st.columns(3)
+                with col_b1:
+                    b_sev = st.selectbox("Severity", ["low", "medium", "high", "critical"], index=1)
+                with col_b2:
+                    b_count = st.number_input("Affected users (approx.)", min_value=0, value=0, step=1)
+                with col_b3:
+                    b_detected = st.text_input("Detected at (ISO)", value=utcnow().isoformat())
+                if st.form_submit_button("Record Breach"):
+                    ok, msg = privacy_manager.report_breach(b_detected, b_desc, b_sev, int(b_count), current_user.phone)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            breaches = privacy_manager.list_breaches()
+            if breaches:
+                for b in breaches:
+                    with st.expander(f"Breach #{b['id']} — {b['severity']} — {b['status']} — detected {b['detected_at'][:10]}"):
+                        st.write(b["description"])
+                        st.caption(f"Affected: ~{b['affected_count']} | reported to authority: "
+                                   f"{b['reported_at'] or 'not yet'} | recorded by {b['created_by']}")
+                        if b["resolution"]:
+                            st.caption(f"Resolution: {b['resolution']}")
+                        breach_statuses = ["open", "investigating", "resolved", "notified"]
+                        col_u1, col_u2, col_u3 = st.columns(3)
+                        with col_u1:
+                            new_status = st.selectbox("Status", breach_statuses,
+                                                      index=breach_statuses.index(b["status"]),
+                                                      key=f"breach_status_{b['id']}")
+                        with col_u2:
+                            resolution = st.text_input("Resolution", key=f"breach_res_{b['id']}")
+                        with col_u3:
+                            if st.button("Update", key=f"breach_upd_{b['id']}"):
+                                ok, msg = privacy_manager.update_breach(
+                                    b["id"], status=new_status, resolution=resolution or None,
+                                    actor=current_user.phone)
+                                if ok:
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                            if b["status"] != "notified" and st.button("Mark Notified", key=f"breach_notif_{b['id']}"):
+                                ok, msg = privacy_manager.update_breach(
+                                    b["id"], status="notified", reported_at=utcnow().isoformat(),
+                                    actor=current_user.phone)
+                                if ok:
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+            else:
+                st.info("No breaches recorded.")
+
+            st.markdown("---")
+            st.markdown("### Legal Documents")
+            st.caption("Publish a new Privacy Policy / Terms of Service version. Users are prompted to re-accept.")
+            with st.form("legal_doc_form"):
+                ld_type = st.selectbox("Document", ["privacy_policy", "terms_of_service"])
+                ld_version = st.text_input("Version (e.g. 1.1)")
+                ld_content = st.text_area("Content", height=200)
+                if st.form_submit_button("Publish Version"):
+                    ok, msg = privacy_manager.publish_document(ld_type, ld_version, ld_content, current_user.phone)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            for dt in ("privacy_policy", "terms_of_service"):
+                active_doc = privacy_manager.get_active_document(dt)
+                if active_doc:
+                    st.caption(f"{dt}: active v{active_doc['version']} (published {active_doc['published_at'][:10]})")
 
         # ---------------- AUDIT TAB ----------------
         elif selected_adm == "Audit":
@@ -2054,6 +2151,59 @@ else:
                 if r["status"] != "pending":
                     st.caption(f"Request #{r['id']}: {r['status']}"
                                 + (f" ({r['reviewed_at'][:10]})" if r["reviewed_at"] else ""))
+
+        st.markdown("---")
+        st.markdown("### Your Privacy Rights")
+        st.caption("Access, rectification, erasure, restriction, portability and objection — "
+                   "GDPR / Rwanda Law No. 058/2021. Contact: privacy@mobilemoney.example")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            st.markdown("**Correct my data (rectification)**")
+            with st.form("rectify_form"):
+                new_name = st.text_input("Full name", value=current_user.name)
+                if st.form_submit_button("Update Name"):
+                    ok, msg = privacy_manager.update_profile(current_user.phone, new_name)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            st.markdown("**My consents**")
+            consents = privacy_manager.get_consents(current_user.phone)
+            active_consents = {c["purpose"]: c for c in consents if not c["revoked_at"]}
+            terms_c = active_consents.get("terms")
+            privacy_c = active_consents.get("privacy")
+            mkt_c = active_consents.get("marketing")
+            st.write(f"Terms of Service: v{terms_c['policy_version']}" if terms_c else "Terms of Service: not accepted")
+            st.write(f"Privacy Policy: v{privacy_c['policy_version']}" if privacy_c else "Privacy Policy: not accepted")
+            mkt_on = st.toggle("Marketing messages", value=bool(mkt_c), key="consent_marketing")
+            if mkt_on != bool(mkt_c):
+                if mkt_on:
+                    privacy_manager.record_consent(current_user.phone, "marketing", "opt-in")
+                else:
+                    privacy_manager.revoke_consent(current_user.phone, "marketing")
+                st.rerun()
+            if privacy_manager.policy_update_required(current_user.phone):
+                st.warning("A new version of the Privacy Policy is active.")
+                if st.button("Review & Accept New Privacy Policy", key="privacy_reaccept"):
+                    ok, msg = privacy_manager.accept_current_policies(current_user.phone)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        with col_r2:
+            st.markdown("**Legal documents**")
+            policy_doc = privacy_manager.get_active_document("privacy_policy")
+            if policy_doc:
+                with st.expander(f"Privacy Policy v{policy_doc['version']}"):
+                    st.markdown(policy_doc["content"])
+            terms_doc = privacy_manager.get_active_document("terms_of_service")
+            if terms_doc:
+                with st.expander(f"Terms of Service v{terms_doc['version']}"):
+                    st.markdown(terms_doc["content"])
 
     elif is_selected("verify_id"):
         st.subheader(TR("verify_id"))

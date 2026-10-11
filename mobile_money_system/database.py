@@ -241,6 +241,51 @@ def init_db():
         )
         ''')
 
+        # Consent Ledger (privacy-law compliance: demonstrable, versioned,
+        # revocable consent for terms / privacy policy / marketing)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS consents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            accepted_at TEXT NOT NULL,
+            revoked_at TEXT,
+            ip_address TEXT,
+            user_agent TEXT
+        )
+        ''')
+
+        # Legal Documents (versioned privacy policy / terms of service)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS legal_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_type TEXT NOT NULL,
+            version TEXT NOT NULL,
+            content TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            active INTEGER DEFAULT 1,
+            UNIQUE(doc_type, version)
+        )
+        ''')
+
+        # Data Breach Register (GDPR Art. 33 / Rwanda Law 058/2021 record-keeping)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS data_breaches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            reported_at TEXT,
+            severity TEXT DEFAULT 'medium',
+            description TEXT NOT NULL,
+            affected_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open',
+            resolution TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        ''')
+
         # OTP Codes (replaces the old in-memory dict — survives restarts and is
         # shared across processes; only a hash of the code is stored)
         cursor.execute('''
@@ -342,6 +387,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_login_attempts_phone ON login_attempts(phone)",
             "CREATE INDEX IF NOT EXISTS idx_rate_limit_key ON rate_limit_hits(key)",
             "CREATE INDEX IF NOT EXISTS idx_billers_active ON billers(active)",
+            "CREATE INDEX IF NOT EXISTS idx_consents_phone ON consents(phone)",
+            "CREATE INDEX IF NOT EXISTS idx_breaches_status ON data_breaches(status)",
         ]
         for _sql in indexes:
             cursor.execute(_sql)
@@ -351,6 +398,16 @@ def init_db():
         _add_column(cursor, "users", "monthly_budget", "TEXT DEFAULT '0'")
 
         conn.commit()
+
+    # Seed the default legal documents (privacy policy / terms) and backfill
+    # consent records for pre-existing users. Idempotent, and tied to schema
+    # init so EVERY fresh database gets the documents regardless of which
+    # manager is constructed first. Local import: privacy imports database.
+    if __package__:
+        from .privacy import ensure_legal_documents
+    else:
+        from privacy import ensure_legal_documents  # type: ignore[no-redef]
+    ensure_legal_documents()
 
 if __name__ == "__main__":
     init_db()

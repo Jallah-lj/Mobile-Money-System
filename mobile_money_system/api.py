@@ -16,6 +16,7 @@ import os
 import sqlite3
 import time
 from datetime import datetime
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +32,7 @@ if __package__:
     from .logging_config import setup_logging
     from .models import utcnow
     from .notifications import NotificationService
-    from .privacy import PrivacyManager
+    from .privacy import CONSENT_PURPOSES, PrivacyManager
     from .scheduled import ScheduledPaymentManager
     from .sessions import SessionManager
     from .tickets import TicketManager
@@ -45,7 +46,7 @@ else:
     from logging_config import setup_logging  # type: ignore[no-redef]
     from models import utcnow  # type: ignore[no-redef]
     from notifications import NotificationService  # type: ignore[no-redef]
-    from privacy import PrivacyManager  # type: ignore[no-redef]
+    from privacy import CONSENT_PURPOSES, PrivacyManager  # type: ignore[no-redef]
     from scheduled import ScheduledPaymentManager  # type: ignore[no-redef]
     from sessions import SessionManager  # type: ignore[no-redef]
     from tickets import TicketManager  # type: ignore[no-redef]
@@ -457,6 +458,8 @@ class AppRegisterRequest(BaseModel):
     sec_q: str
     sec_a: str
     currency: str = "USD"
+    accept_terms: bool
+    accept_privacy: bool
 
 
 class AppLoginRequest(BaseModel):
@@ -470,11 +473,22 @@ class AppOtpVerifyRequest(BaseModel):
 
 
 @app.post("/auth/register", tags=["auth"])
-def app_register(req: AppRegisterRequest):
-    """Self-registration from the mobile app (rate-limited; no API key needed)."""
+def app_register(req: AppRegisterRequest, request: Request):
+    """Self-registration from the mobile app (rate-limited; no API key needed).
+
+    Registration requires explicit acceptance of the Terms of Service and the
+    Privacy Policy — the consent is recorded in the ledger with its version.
+    """
+    if not (req.accept_terms and req.accept_privacy):
+        raise HTTPException(status_code=400,
+                            detail="You must accept the Terms of Service and the Privacy Policy to register.")
     ok, msg = user_mgr.register(req.phone, req.name, req.pin, req.sec_q, req.sec_a, req.currency)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
+    privacy_mgr.accept_current_policies(
+        user_mgr.format_phone(req.phone),
+        ip=request.client.host if request.client else "",
+        user_agent=request.headers.get("user-agent", ""))
     return {"message": msg}
 
 
@@ -772,3 +786,112 @@ def app_data_export(phone: str = APP_AUTH):
     if data is None:
         raise HTTPException(status_code=404, detail="User not found")
     return data
+
+
+# --- Privacy law: legal documents, consent ledger, rectification, breaches ----
+
+@app.get("/privacy/{doc_type}", tags=["privacy"])
+def get_legal_document(doc_type: Literal["privacy_policy", "terms_of_service"]):
+    """The active version of a legal document (public)."""
+    doc = privacy_mgr.get_active_document(doc_type)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+class AppConsentRequest(BaseModel):
+    purpose: str                 # terms | privacy | marketing
+
+
+@app.get("/me/consents", tags=["privacy"])
+def app_get_consents(phone: str = APP_AUTH):
+    """The user's consent ledger + whether a new policy version needs acceptance."""
+    terms = privacy_mgr.get_active_document("terms_of_service")
+    privacy = privacy_mgr.get_active_document("privacy_policy")
+    return {
+        "consents": privacy_mgr.get_consents(phone),
+        "active_versions": {
+            "terms_of_service": terms["version"] if terms else None,
+            "privacy_policy": privacy["version"] if privacy else None,
+        },
+        "policy_update_required": privacy_mgr.policy_update_required(phone),
+    }
+
+
+@app.post("/me/consents", tags=["privacy"])
+def app_accept_consent(req: AppConsentRequest, phone: str = APP_AUTH):
+    """Accept (or re-accept) a consent purpose at its current version."""
+    if req.purpose not in CONSENT_PURPOSES:
+        raise HTTPException(status_code=400,
+                            detail=f"Invalid consent purpose (must be one of {CONSENT_PURPOSES})")
+    if req.purpose == "marketing":
+        version = "opt-in"
+    else:
+        doc = privacy_mgr.get_active_document(
+            "terms_of_service" if req.purpose == "terms" else "privacy_policy")
+        if not doc:
+            raise HTTPException(status_code=404, detail="Legal document not found")
+        version = doc["version"]
+    ok, msg = privacy_mgr.record_consent(phone, req.purpose, version)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
+
+
+@app.delete("/me/consents/{purpose}", tags=["privacy"])
+def app_revoke_consent(purpose: str, phone: str = APP_AUTH):
+    """Withdraw consent (right to object / withdraw consent)."""
+    ok, msg = privacy_mgr.revoke_consent(phone, purpose)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
+
+
+class AppProfileRequest(BaseModel):
+    name: str
+
+
+@app.patch("/me/profile", tags=["privacy"])
+def app_update_profile(req: AppProfileRequest, phone: str = APP_AUTH):
+    """Right to rectification: update your own profile data."""
+    ok, msg = privacy_mgr.update_profile(phone, req.name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
+
+
+class AppBreachRequest(BaseModel):
+    detected_at: str
+    description: str
+    severity: str = "medium"
+    affected_count: int = 0
+
+
+@app.get("/admin/breaches", dependencies=[AUTH], tags=["admin"])
+def admin_list_breaches(status: str | None = Query(None)):
+    """Data breach register (GDPR Art. 33 record-keeping)."""
+    return privacy_mgr.list_breaches(status=status)
+
+
+@app.post("/admin/breaches", dependencies=[AUTH], tags=["admin"])
+def admin_report_breach(req: AppBreachRequest):
+    ok, msg = privacy_mgr.report_breach(
+        req.detected_at, req.description, req.severity, req.affected_count, created_by="API")
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
+
+
+class AppBreachUpdateRequest(BaseModel):
+    status: str | None = None
+    resolution: str | None = None
+    reported_at: str | None = None
+
+
+@app.patch("/admin/breaches/{breach_id}", dependencies=[AUTH], tags=["admin"])
+def admin_update_breach(breach_id: int, req: AppBreachUpdateRequest):
+    ok, msg = privacy_mgr.update_breach(
+        breach_id, status=req.status, resolution=req.resolution, reported_at=req.reported_at)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
