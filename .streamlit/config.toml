@@ -1,0 +1,23 @@
+# Streamlit theme configuration for the Mobile Money System.
+#
+# A branded light theme is defined explicitly so the app has a deterministic,
+# designed appearance. Streamlit's native components can follow the browser's
+# color scheme (rendering light text) even when this canvas is pinned light,
+# so styles.py pins native text colors to the theme tokens in BOTH modes —
+# native text always stays readable, regardless of the browser theme.
+
+[theme]
+base = "light"
+primaryColor = "#00C853"
+backgroundColor = "#f4f6fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#0f172a"
+font = "sans serif"
+
+# Palette used when the native theme is switched to dark (e.g. via the
+# Streamlit client menu). Matches the app's in-app dark mode tokens.
+[theme.dark]
+primaryColor = "#00e676"
+backgroundColor = "#0b1220"
+secondaryBackgroundColor = "#131c30"
+textColor = "#e6ecf7"

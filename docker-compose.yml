@@ -1,0 +1,50 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - MMS_DB_PATH=/app/data/mobile_money.db
+    volumes:
+      - mms-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  api:
+    build: .
+    command: ["uvicorn", "mobile_money_system.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      - MMS_DB_PATH=/app/data/mobile_money.db
+      # Set a strong key in production (see DEPLOYMENT.md).
+      - MMS_API_KEY=${MMS_API_KEY:-change-me}
+    volumes:
+      - mms-data:/app/data
+    depends_on:
+      - web
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  scheduler:
+    build: .
+    command: ["python", "-m", "mobile_money_system.scheduler_worker"]
+    environment:
+      - MMS_DB_PATH=/app/data/mobile_money.db
+      - MMS_SCHEDULER_TICK_SECONDS=60
+    volumes:
+      - mms-data:/app/data
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  mms-data:

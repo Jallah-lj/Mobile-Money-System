@@ -1,54 +1,64 @@
-# Mobile Money System
+# Mobile Money System — Package
 
- A comprehensive Mobile Money simulation built with Python and Streamlit. This application mimics a real-world fintech platform with features for users and administrators.
+Core package for the Mobile Money platform. See the [root README](../../README.md)
+for the full feature overview (free pricing, security, quickstart).
 
-## 📱 Features
+## Modules
 
-### User Features
-- **Secure Authentication**: Login with Phone and PIN.
-- **Registration**: Sign up with improved security (Security Questions).
-- **Send Money**: Transfer funds to other users with a verification review screen.
-- **Pay Bills**: Pay for Utilities (Electricity, Water) and Airtime with confirmation.
-- **Load Money**: Simulate funding your wallet from a connected bank card.
-- **Withdraw**: Withdraw funds with automatic fee calculation.
-- **Transaction History**: Detailed history view with downloadable receipts.
-- **Inbox**: Real-time notifications for received funds and bill payments.
-- **Security**: SHA-256 Hashing for PINs.
+| Module | Responsibility |
+|---|---|
+| `app.py` | Streamlit web app — user dashboard + admin panel |
+| `api.py` | FastAPI REST API — set `MMS_API_KEY` to enable key auth |
+| `main.py` | CLI client |
+| `audit.py` | Append-only audit log of security-relevant events |
+| `transactions.py` | Financial operations: fees, limits, AML |
+| `users.py` | Auth (bcrypt + lockout + OTP), KYC, user helpers, 2FA toggle |
+| `sessions.py` | Server-side login session management (revoke, log-out-everywhere) |
+| `beneficiaries.py` | Saved recipients with nicknames + recent recipients |
+| `scheduled.py` | Scheduled & recurring payments (standing orders) |
+| `analytics.py` | Personal analytics & monthly account statements |
+| `pdfdoc.py` | Dependency-free PDF writer (receipts, statements) |
+| `webhooks.py` | Signed outbound webhooks (HMAC-SHA256 + delivery log) |
+| `notifications.py` | SMS/email notifications (console + SMTP providers) |
+| `tickets.py` | Support ticketing (user tickets + admin queue) |
+| `privacy.py` | GDPR-style data export + account deletion (pseudonymized) |
+| `billers.py` | Registered billers for the Pay Bills page |
+| `config.py` | Operator settings (fees, AML thresholds, retention) in SQLite |
+| `events.py` | Async event dispatcher (webhooks/notifications off the payment path) |
+| `backup.py` | Database snapshots + restore (SQLite online backup API) |
+| `reconcile.py` | Ledger reconciliation (balances, double-entry invariant) |
+| `retention.py` | Configurable data-retention pruning |
+| `logging_config.py` | Structured JSON-lines operational logging |
+| `scheduler_worker.py` | Standalone worker: due payments + daily maintenance |
+| `database.py` | SQLite schema + idempotent migrations (WAL, indexes, auto-runs) |
+| `ledger.py` | Double-entry bookkeeping — every posted batch sums to zero |
+| `models.py` | `User`, `Transaction`, `LedgerEntry`, `AuditEntry` dataclasses |
+| `i18n.py` | Translations: English, Français, Español, Swahili |
+| `styles.py` | Design system with light & dark themes |
 
-### Admin Features
-- **Dashboard**: View system-wide metrics (Total Users, Liquidity, Revenue).
-- **User Directory**: List all registered users and their balances.
-- **Transaction Logs**: Audit trail of every transaction in the system.
+## Run
 
-## ⚙️ System Controls
-- **Transaction Limits**: None
-- **Fees**:
-  - Transfers: 1%
-  - Withdrawals: 1%
-  - Bill Payments: $0.50 (Flat Fee)
+```bash
+# Web app
+streamlit run mobile_money_system/app.py
 
-## 🚀 How to Run
+# REST API (from the repo root)
+MMS_API_KEY=change-me uvicorn mobile_money_system.api:app --reload
 
-1. **Install Dependencies**:
-   ```bash
-   pip install -r mobile_money_system/requirements.txt
-   ```
+# CLI
+python mobile_money_system/main.py
 
-2. **Run the Application**:
-   ```bash
-   streamlit run mobile_money_system/app.py
-   ```
+# Standalone scheduler worker (fires due standing orders without the app)
+python -m mobile_money_system.scheduler_worker
+```
 
-3. **Access the App**:
-   - The app will open in your browser (usually at http://localhost:8501).
+## Pricing — free for everyone
 
-## 🛠️ Setup & Utilities
+The platform is **free to use**: no subscription, no paywall. Everyone gets:
 
-- **Creating an Admin**:
-  The system uses a `users.json` file. To promote a user to Admin, you can use the helper script (if provided) or manually edit the JSON file to set `"role": "admin"` for a specific user.
-
-## 📂 Project Structure
-- `app.py`: Main Streamlit web application.
-- `transactions.py`: Core logic for financial operations, limits, and fees.
-- `users.py`: User management and authentication logic.
-- `data/*.json`: Data persistence for Users and Transactions.
+| Operation | Rate |
+|---|---|
+| Transfer | 0% |
+| Withdrawal | 0.5% |
+| Bill payment | $0.25 flat |
+| Per-transaction limit | risk-tier scaled ($1k–$50k) × 10 |

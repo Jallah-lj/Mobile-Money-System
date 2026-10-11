@@ -1,56 +1,85 @@
-import unittest
-import sys
-import os
+"""Core transaction tests: fees, balances, limits — against a real (temp) SQLite DB."""
+
 from decimal import Decimal
 
-# Add parent directory to path to import modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-try:
-    from mobile_money_system.transactions import TransactionManager
-    from mobile_money_system.users import UserManager, User
-except ImportError:
-    # Fallback to local import if run from root
-    from mobile_money_system.transactions import TransactionManager
-    from mobile_money_system.users import UserManager, User
+def test_transfer_fee_is_zero(verified_user, second_verified_user):
+    """The platform is free to use: 0% transfer fee for everyone."""
+    alice, um, tm = verified_user
+    bob, _, _ = second_verified_user
 
-class MockUserManager:
-    def __init__(self):
-        self.users = {
-            "sender": User("sender", "Sender", "1234", Decimal("10000.0"), is_verified=True),
-            "receiver": User("receiver", "Receiver", "1234", Decimal("100.0"), is_verified=True),
-            "rich_guy": User("rich_guy", "Rich", "1234", Decimal("100000.0"), is_verified=True)
-        }
-    
-    def get_user(self, phone):
-        return self.users.get(phone)
-    
-    def save_users(self):
-        pass # Mock save
+    sender_start = um.get_user(alice).balance
+    receiver_start = um.get_user(bob).balance
 
-class TestTransactionLimits(unittest.TestCase):
-    def setUp(self):
-        self.user_manager = MockUserManager()
-        # Point to a temporary file or mock storage logic if needed
-        self.tm = TransactionManager(self.user_manager)
-        self.tm.transactions = [] # Clear history
-        self.tm.save_transactions = lambda: None # Mock save
+    success, msg = tm.transfer(alice, bob, 100.0, "Fee Test")
+    assert success, msg
 
-    def test_fees(self):
-        # Transfer fee is 1%
-        sender_start = self.user_manager.users["sender"].balance
-        receiver_start = self.user_manager.users["receiver"].balance
-        amount = Decimal("100")
-        
-        success, msg = self.tm.transfer("sender", "receiver", float(amount), "Fee Test")
-        self.assertTrue(success)
-        
-        fee = amount * Decimal("0.01")
-        
-        # Check Sender deducted amount + fee
-        self.assertEqual(self.user_manager.users["sender"].balance, sender_start - amount - fee)
-        # Check Receiver got amount
-        self.assertEqual(self.user_manager.users["receiver"].balance, receiver_start + amount)
+    assert um.get_user(alice).balance == sender_start - Decimal("100")
+    assert um.get_user(bob).balance == receiver_start + Decimal("100")
 
-if __name__ == '__main__':
-    unittest.main()
+
+def test_transfer_insufficient_funds(verified_user, second_verified_user):
+    alice, um, tm = verified_user
+    bob, _, _ = second_verified_user
+    success, msg = tm.transfer(alice, bob, 99_999_999.0)
+    assert not success
+    assert "Insufficient" in msg or "limit" in msg.lower()
+
+
+def test_transfer_to_self_rejected(verified_user):
+    alice, um, tm = verified_user
+    success, msg = tm.transfer(alice, alice, 10.0)
+    assert not success
+    assert "self" in msg.lower()
+
+
+def test_transfer_to_unknown_rejected(verified_user):
+    alice, um, tm = verified_user
+    success, msg = tm.transfer(alice, "+2349999999999", 10.0)
+    assert not success
+
+
+def test_withdrawal_fee_and_balance(verified_user):
+    alice, um, tm = verified_user
+    start = um.get_user(alice).balance
+    success, msg = tm.withdraw(alice, 100.0)
+    assert success, msg
+    # 0.5% withdrawal fee
+    assert um.get_user(alice).balance == start - Decimal("100") - Decimal("0.50")
+
+
+def test_withdrawal_insufficient_funds(verified_user):
+    alice, um, tm = verified_user
+    success, msg = tm.withdraw(alice, 99_999_999.0)
+    assert not success
+
+
+def test_deposit_increases_balance(verified_user):
+    alice, um, tm = verified_user
+    start = um.get_user(alice).balance
+    success, msg = tm.deposit(alice, 250.0)
+    assert success, msg
+    assert um.get_user(alice).balance == start + Decimal("250.0")
+
+
+def test_pay_bill_fee(verified_user):
+    alice, um, tm = verified_user
+    start = um.get_user(alice).balance
+    success, msg = tm.pay_bill(alice, 50.0, "LEC Power", "MTR-123")
+    assert success, msg
+    # Flat $0.25 bill payment fee
+    assert um.get_user(alice).balance == start - Decimal("50.0") - Decimal("0.25")
+
+
+def test_ledger_stays_balanced(verified_user, second_verified_user):
+    """Every posted ledger batch must sum to zero (double-entry invariant)."""
+    alice, um, tm = verified_user
+    bob, _, _ = second_verified_user
+    tm.transfer(alice, bob, 100.0)
+    tm.withdraw(alice, 50.0)
+    tm.pay_bill(alice, 20.0, "Water", "ACC-1")
+
+    from mobile_money_system.database import get_db
+    with get_db() as conn:
+        total = conn.execute("SELECT SUM(CAST(amount AS REAL)) FROM ledger").fetchone()[0]
+    assert total == 0.0

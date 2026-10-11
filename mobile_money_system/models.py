@@ -1,7 +1,16 @@
 from dataclasses import dataclass, field
-from typing import Optional
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
+
+
+def utcnow() -> datetime:
+    """Timezone-aware UTC now, returned as naive UTC for consistent DB storage.
+
+    Replaces the deprecated ``datetime.utcnow()`` while keeping the exact
+    same ISO format already stored in the database (naive UTC), so existing
+    rows remain string-comparable with new ones.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
 
 @dataclass
 class User:
@@ -13,15 +22,21 @@ class User:
     role: str = "user"
     sec_q: str = ""
     sec_a: str = ""
-    
+
     # KYC Fields
     id_type: str = "" # passport, national_id
-    id_number: str = "" 
+    id_number: str = ""
     is_verified: bool = False
-    
+
     # Status Fields
     status: str = "active" # active, suspended, deleted
     risk_tier: str = "standard" # low, standard, high
+
+    # Security Fields
+    two_factor_enabled: bool = True  # OTP required at login / high-value actions
+
+    # Personal finance
+    monthly_budget: Decimal = field(default_factory=lambda: Decimal("0"))  # 0 = no budget set
 
     def to_dict(self):
         return {
@@ -37,8 +52,20 @@ class User:
             "id_number": self.id_number,
             "is_verified": self.is_verified,
             "status": self.status,
-            "risk_tier": self.risk_tier
+            "risk_tier": self.risk_tier,
+            "two_factor_enabled": self.two_factor_enabled,
+            "monthly_budget": str(self.monthly_budget)
         }
+
+    def to_public_dict(self):
+        """Safe representation for API/UI display — no credentials or raw KYC data."""
+        d = self.to_dict()
+        d.pop("pin", None)
+        d.pop("sec_a", None)
+        d.pop("sec_q", None)
+        if self.id_number:
+            d["id_number"] = "****" + self.id_number[-4:]
+        return d
 
     @staticmethod
     def from_dict(data: dict) -> 'User':
@@ -55,7 +82,9 @@ class User:
             id_number=data.get("id_number", ""),
             is_verified=data.get("is_verified", False),
             status=data.get("status", "active"),
-            risk_tier=data.get("risk_tier", "standard")
+            risk_tier=data.get("risk_tier", "standard"),
+            two_factor_enabled=bool(data.get("two_factor_enabled", True)),
+            monthly_budget=Decimal(str(data.get("monthly_budget") or "0"))
         )
 
 @dataclass
@@ -66,10 +95,10 @@ class Transaction:
     amount: Decimal
     currency: str
     type: str
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: utcnow().isoformat())
     description: str = ""
     status: str = "COMPLETED"
-    
+
     # AML Fields
     flagged: bool = False
     flag_reason: str = ""
@@ -88,7 +117,7 @@ class Transaction:
             "flagged": self.flagged,
             "flag_reason": self.flag_reason
         }
-    
+
     @staticmethod
     def from_dict(data: dict) -> 'Transaction':
         return Transaction(
@@ -98,11 +127,45 @@ class Transaction:
             amount=Decimal(str(data["amount"])),
             currency=data.get("currency", "USD"),
             type=data["type"],
-            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=data.get("timestamp", utcnow().isoformat()),
             description=data.get("description", ""),
             status=data.get("status", "COMPLETED"),
             flagged=bool(data.get("flagged", False)),
             flag_reason=data.get("flag_reason", "")
+        )
+
+@dataclass
+class AuditEntry:
+    """Immutable record of a security-relevant system event."""
+    id: str
+    timestamp: str
+    actor_phone: str   # Who performed the action ('SYSTEM' for automated events)
+    action: str        # e.g. LOGIN_SUCCESS, TRANSFER, KYC_SUBMIT
+    target: str = ""   # What the action applied to (phone, transaction id, ...)
+    details: str = ""
+    status: str = "SUCCESS"  # SUCCESS | FAILURE | BLOCKED
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp,
+            "actor_phone": self.actor_phone,
+            "action": self.action,
+            "target": self.target,
+            "details": self.details,
+            "status": self.status
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> 'AuditEntry':
+        return AuditEntry(
+            id=data["id"],
+            timestamp=data["timestamp"],
+            actor_phone=data["actor_phone"],
+            action=data["action"],
+            target=data.get("target", ""),
+            details=data.get("details", ""),
+            status=data.get("status", "SUCCESS")
         )
 
 @dataclass
@@ -111,7 +174,7 @@ class LedgerEntry:
     transaction_id: str
     account_id: str  # Phone number or System Account (e.g., 'SYSTEM_REVENUE', 'SYSTEM_CASH')
     amount: Decimal # Positive for Credit (Increase User Balance), Negative for Debit (Decrease User Balance)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: utcnow().isoformat())
     description: str = ""
 
     def to_dict(self):
@@ -131,7 +194,7 @@ class LedgerEntry:
             transaction_id=data["transaction_id"],
             account_id=data["account_id"],
             amount=Decimal(str(data["amount"])),
-            timestamp=data.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=data.get("timestamp", utcnow().isoformat()),
             description=data.get("description", "")
         )
 

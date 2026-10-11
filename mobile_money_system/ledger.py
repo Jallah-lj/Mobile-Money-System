@@ -1,15 +1,13 @@
-import uuid
 import time
+import uuid
 from decimal import Decimal
-from typing import List, Dict, Optional
-from datetime import datetime
 
-try:
-    from models import LedgerEntry
-    from database import get_db
-except ImportError:
-    from mobile_money_system.models import LedgerEntry
-    from mobile_money_system.database import get_db
+if __package__:
+    from .database import get_db
+    from .models import LedgerEntry, utcnow
+else:
+    from database import get_db  # type: ignore[no-redef]
+    from models import LedgerEntry, utcnow  # type: ignore[no-redef]
 
 class LedgerManager:
     """
@@ -20,17 +18,17 @@ class LedgerManager:
         # We no longer use ledger_file, everything in main SQLite
         pass
 
-    def post_entries(self, entries: List[LedgerEntry]) -> bool:
+    def post_entries(self, entries: list[LedgerEntry]) -> bool:
         """
         Validates and posts a batch of entries.
         The sum of amounts in the batch MUST be zero.
         """
         total = sum((e.amount for e in entries), Decimal("0.0"))
-        
+
         if total != Decimal("0.0"):
             print(f"Ledger Error: Unbalanced transaction. Sum: {total}")
             return False
-            
+
         with get_db() as conn:
             cursor = conn.cursor()
             for e in entries:
@@ -45,13 +43,13 @@ class LedgerManager:
         timestamp_part = int(time.time())
         random_part = str(uuid.uuid4())[:8].upper()
         entry_id = f"LEG-{timestamp_part}-{random_part}"
-        
+
         return LedgerEntry(
             id=entry_id,
             transaction_id=transaction_id,
             account_id=account_id,
             amount=amount,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=utcnow().isoformat(),
             description=description
         )
 
