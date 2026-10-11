@@ -6,6 +6,8 @@ import pytest
 # Never let the app's background scheduler thread run during tests — it would
 # tick against whichever database is patched at the moment (or the live one).
 os.environ.setdefault("MMS_SCHEDULER_TICK_SECONDS", "0")
+# Never auto-create database backups while AppTest boots the app repeatedly.
+os.environ.setdefault("MMS_AUTO_BACKUP", "0")
 
 # Make the package importable when running pytest from the repo root
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

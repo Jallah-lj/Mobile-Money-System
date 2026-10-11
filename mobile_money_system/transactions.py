@@ -455,34 +455,44 @@ class TransactionManager:
         return True, f"Withdrawn ${amount_decimal}."
 
     def transfer(self, sender_phone: str, receiver_phone: str, amount: float, description: str = "Transfer") -> tuple[bool, str]:
+        """Transfer money between two users. Returns (success, message)."""
+        ok, msg, _txn = self._transfer(sender_phone, receiver_phone, amount, description)
+        return ok, msg
+
+    def transfer_with_ref(self, sender_phone: str, receiver_phone: str, amount: float, description: str = "Transfer") -> tuple[bool, str, Transaction | None]:
+        """transfer() that also returns the created transaction record
+        (used by the API to include a reference in idempotent responses)."""
+        return self._transfer(sender_phone, receiver_phone, amount, description)
+
+    def _transfer(self, sender_phone: str, receiver_phone: str, amount: float, description: str = "Transfer") -> tuple[bool, str, Transaction | None]:
         sender = self.user_manager.get_user(sender_phone)
         receiver = self.user_manager.get_user(receiver_phone)
 
         if not sender:
-            return False, "Sender not found"
+            return False, "Sender not found", None
         if not receiver:
-            return False, "Receiver not found"
+            return False, "Receiver not found", None
         if sender_phone == receiver_phone:
-            return False, "Cannot transfer to self"
+            return False, "Cannot transfer to self", None
         amount_decimal = Decimal(str(amount))
         if amount_decimal <= 0:
-            return False, "Invalid amount"
+            return False, "Invalid amount", None
 
         # Currency check
         if sender.currency != receiver.currency:
-            return False, "Currency mismatch."
+            return False, "Currency mismatch.", None
 
         allowed, msg = self._check_limits(sender_phone, amount_decimal)
         if not allowed:
             log_event(sender_phone, "TRANSFER", target=receiver_phone,
                       details=f"Blocked: {msg} ({amount_decimal})", status="BLOCKED")
-            return False, msg
+            return False, msg, None
 
         fee = amount_decimal * TRANSFER_FEE_RATE
         total_deduction = amount_decimal + fee
 
         if sender.balance < total_deduction:
-            return False, "Insufficient balance."
+            return False, "Insufficient balance.", None
 
         # AML Check
         flagged, flag_reason = self._assess_aml(sender_phone, amount_decimal)
@@ -522,7 +532,7 @@ class TransactionManager:
 
         all_entries = entries_tr + entries_fee
         if not self._entries_balanced(all_entries):
-            return False, "Transaction failed: Ledger imbalance."
+            return False, "Transaction failed: Ledger imbalance.", None
 
         # Atomic: re-read both balances under the write lock, re-check the
         # sender's funds, then record + ledger + both balance updates in one
@@ -534,9 +544,9 @@ class TransactionManager:
                 sender_balance = self._get_balance(cur, sender_phone)
                 receiver_balance = self._get_balance(cur, receiver_phone)
                 if sender_balance is None or receiver_balance is None:
-                    return False, "Sender not found" if sender_balance is None else "Receiver not found"
+                    return (False, "Sender not found", None) if sender_balance is None else (False, "Receiver not found", None)
                 if sender_balance < total_deduction:
-                    return False, "Insufficient balance."
+                    return False, "Insufficient balance.", None
                 self._insert_txn(cur, txn_tr)
                 if txn_fee is not None:
                     self._insert_txn(cur, txn_fee)
@@ -544,7 +554,7 @@ class TransactionManager:
                 self._set_balance(cur, sender_phone, sender_balance - total_deduction)
                 self._set_balance(cur, receiver_phone, receiver_balance + amount_decimal)
         except sqlite3.Error as e:
-            return False, f"Transaction failed: {e}"
+            return False, f"Transaction failed: {e}", None
 
         sender.balance -= total_deduction
         receiver.balance += amount_decimal
@@ -556,7 +566,7 @@ class TransactionManager:
         if flagged:
             self._alert_aml(txn_tr, flag_reason)
         self._emit("TRANSFER", txn_tr)
-        return True, "Transfer successful"
+        return True, "Transfer successful", txn_tr
 
     def pay_bill(self, phone: str, amount: float, biller_name: str, biller_id: str, description: str = "Bill Payment") -> tuple[bool, str]:
         user = self.user_manager.get_user(phone)

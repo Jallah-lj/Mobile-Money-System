@@ -11,12 +11,16 @@ from io import StringIO
 import streamlit as st
 from analytics import budget_status, monthly_statement, monthly_totals, spending_by_category, top_counterparties
 from audit import get_audit_logs
+from backup import BackupManager
 from beneficiaries import BeneficiaryManager
 from i18n import get_text
+from logging_config import log_structured, setup_logging
 from models import utcnow
 from notifications import NotificationService
 from pdfdoc import build_pdf, receipt_pdf
 from privacy import PrivacyManager, export_to_csv
+from reconcile import ReconciliationManager
+from retention import RetentionManager
 from scheduled import ScheduledPaymentManager, start_scheduler
 from sessions import SessionManager
 from streamlit_option_menu import option_menu
@@ -106,6 +110,15 @@ if 'ticket_manager' not in st.session_state:
 if 'privacy_manager' not in st.session_state:
     st.session_state.privacy_manager = PrivacyManager()
 
+if 'backup_manager' not in st.session_state:
+    st.session_state.backup_manager = BackupManager()
+
+if 'reconcile_manager' not in st.session_state:
+    st.session_state.reconcile_manager = ReconciliationManager()
+
+if 'retention_manager' not in st.session_state:
+    st.session_state.retention_manager = RetentionManager()
+
 if 'current_user_phone' not in st.session_state:
     st.session_state.current_user_phone = None
 
@@ -118,6 +131,13 @@ webhook_manager = st.session_state.webhook_manager
 notification_service = st.session_state.notification_service
 ticket_manager = st.session_state.ticket_manager
 privacy_manager = st.session_state.privacy_manager
+backup_manager = st.session_state.backup_manager
+reconcile_manager = st.session_state.reconcile_manager
+retention_manager = st.session_state.retention_manager
+
+# --- Structured operational logging (JSON lines to logs/mms.log) ---
+setup_logging()
+log_structured("APP_BOOT", db_path=os.environ.get("MMS_DB_PATH", "mobile_money.db"))
 
 # --- Scheduler tick: execute due scheduled/standing-order payments ---
 # Rows are claimed atomically before execution, so running this on every app
@@ -125,6 +145,8 @@ privacy_manager = st.session_state.privacy_manager
 # background thread also ticks on a timer (MMS_SCHEDULER_TICK_SECONDS, default
 # 60s; set to 0 to disable) so standing orders fire even when the app is idle.
 scheduled_manager.process_due()
+if os.environ.get("MMS_AUTO_BACKUP", "1") == "1":
+    backup_manager.maybe_auto_backup()
 start_scheduler(scheduled_manager,
                 tick_seconds=float(os.environ.get("MMS_SCHEDULER_TICK_SECONDS", "60")))
 
@@ -710,6 +732,121 @@ else:
                         st.info("No deliveries yet.")
             else:
                 st.info("No webhooks registered yet.")
+
+            st.markdown("---")
+            st.markdown("### 💾 Backups")
+            st.caption("Snapshots of the whole database (SQLite online backup — safe while the app is running). "
+                       "Automatic snapshots are taken at most once per configured interval.")
+            col_bk1, col_bk2 = st.columns([1, 3])
+            with col_bk1:
+                if st.button("📸 Create Backup Now", width="stretch"):
+                    ok, result = backup_manager.create_backup(note="manual")
+                    if ok:
+                        st.success(f"Backup created: {os.path.basename(result)}")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(result)
+            with col_bk2:
+                backups = backup_manager.list_backups()
+                if backups:
+                    for b in backups:
+                        col_b1, col_b2, col_b3 = st.columns([3, 2, 2])
+                        with col_b1:
+                            st.write(f"**{b['filename']}** — {b['size_bytes'] / 1024:.1f} KB — {b['created_at'].replace('T', ' ')[:16]}"
+                                     + (f" — {b['note']}" if b['note'] else ""))
+                        with col_b2:
+                            path = backup_manager.backup_path(b['filename'])
+                            if path:
+                                with open(path, "rb") as fh:
+                                    st.download_button("Download", fh.read(),
+                                                       file_name=b['filename'],
+                                                       mime="application/octet-stream",
+                                                       key=f"bk_dl_{b['id']}")
+                        with col_b3:
+                            if st.button("Restore", key=f"bk_rs_{b['id']}", type="primary"):
+                                ok, msg = backup_manager.restore_backup(b['filename'])
+                                if ok:
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                else:
+                    st.info("No backups yet.")
+
+            st.markdown("---")
+            st.markdown("### 🔍 Ledger Reconciliation")
+            st.caption("Verifies every user balance against the double-entry ledger and checks money conservation.")
+            if st.button("Run Reconciliation", width="stretch"):
+                report = reconcile_manager.reconcile()
+                st.session_state.recon_report = report
+            report = st.session_state.get("recon_report")
+            if report:
+                col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+                col_r1.metric("Users Checked", report["checked_users"])
+                col_r2.metric("Balance Mismatches", len(report["balance_mismatches"]))
+                col_r3.metric("Unbalanced Txns", len(report["unbalanced_transactions"]))
+                col_r4.metric("Users Total", f"${float(report['users_total']):,.2f}")
+                if report["ok"]:
+                    st.success("Reconciliation passed: balances match the ledger and money is conserved.")
+                else:
+                    st.error("Reconciliation found problems — see below.")
+                if report["balance_mismatches"]:
+                    st.markdown("**Balance mismatches**")
+                    st.dataframe(report["balance_mismatches"], width="stretch")
+                if report["unbalanced_transactions"]:
+                    st.markdown("**Unbalanced ledger batches**")
+                    st.dataframe(report["unbalanced_transactions"], width="stretch")
+
+            st.markdown("---")
+            st.markdown("### 🧹 Data Retention")
+            st.caption("Prunes old rows (audit log, sessions, deliveries, OTPs, rate-limit hits, idempotency keys, lockouts) "
+                       "according to the retention periods below. Days; 0 = keep forever.")
+            from config import all_settings, get_setting, set_setting
+            settings = all_settings()
+            ret_keys = [
+                ("retention_days_audit_log", "Audit log"),
+                ("retention_days_sessions", "Sessions"),
+                ("retention_days_webhook_deliveries", "Webhook deliveries"),
+                ("retention_days_login_attempts", "Login attempts"),
+                ("retention_days_misc", "OTPs & rate-limit hits"),
+                ("retention_days_idempotency_keys", "Idempotency keys"),
+                ("retention_days_account_lockouts", "Account lockouts"),
+            ]
+            ret_cols = st.columns(4)
+            for i, (key, label) in enumerate(ret_keys):
+                with ret_cols[i % 4]:
+                    st.number_input(label + " (days)", min_value=0, max_value=3650,
+                                    value=int(settings.get(key, 0)), key=f"ret_{key}")
+            col_rt1, col_rt2 = st.columns([1, 3])
+            with col_rt1:
+                if st.button("Save Retention", width="stretch"):
+                    for key, _label in ret_keys:
+                        set_setting(key, str(st.session_state[f"ret_{key}"]))
+                    st.success("Retention settings saved")
+                    time.sleep(1)
+                    st.rerun()
+            with col_rt2:
+                last_run = get_setting("retention_last_run", "never")
+                st.caption(f"Last run: {last_run.replace('T', ' ')[:19]}")
+            if st.button("🧹 Run Retention Now", width="stretch"):
+                deleted = retention_manager.run_retention()
+                total = sum(deleted.values())
+                log_structured("RETENTION_RUN", deleted=deleted)
+                st.success(f"Retention complete — {total} old rows removed.")
+                time.sleep(1)
+                st.rerun()
+
+            st.markdown("---")
+            st.markdown("### 📊 Operations")
+            from database import get_db as _get_db
+            with _get_db() as _conn:
+                _journal = _conn.execute("PRAGMA journal_mode").fetchone()[0]
+                _users = _conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                _txns = _conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+            st.caption(f"Database: {os.environ.get('MMS_DB_PATH', 'mobile_money.db')} • "
+                       f"journal mode: {_journal} • users: {_users} • transactions: {_txns}")
 
         # ---------------- SUPPORT TAB ----------------
         elif selected_adm == "Support":

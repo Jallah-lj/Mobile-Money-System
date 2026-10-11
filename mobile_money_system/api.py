@@ -8,6 +8,7 @@ Security model:
   * User responses never expose PIN hashes or security answers.
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -20,6 +21,8 @@ from pydantic import BaseModel
 try:
     from .audit import get_audit_logs
     from .database import get_db, write_transaction
+    from .logging_config import setup_logging
+    from .models import utcnow
     from .privacy import PrivacyManager
     from .transactions import TransactionManager
     from .users import UserManager
@@ -27,6 +30,8 @@ except ImportError:
     # Dual import path: this module is also runnable as a top-level script module.
     from audit import get_audit_logs  # type: ignore[no-redef]
     from database import get_db, write_transaction  # type: ignore[no-redef]
+    from logging_config import setup_logging  # type: ignore[no-redef]
+    from models import utcnow  # type: ignore[no-redef]
     from privacy import PrivacyManager  # type: ignore[no-redef]
     from transactions import TransactionManager  # type: ignore[no-redef]
     from users import UserManager  # type: ignore[no-redef]
@@ -97,6 +102,36 @@ _login_limiter = RateLimiter(*LOGIN_LIMIT)
 _register_limiter = RateLimiter(*REGISTER_LIMIT)
 
 RATE_LIMIT_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+_START_TIME = time.time()
+
+setup_logging()
+
+
+# --- Idempotency -------------------------------------------------------------
+# Clients can send an `Idempotency-Key` header on POST /transactions/transfer.
+# A retried request with the same key replays the stored response instead of
+# executing the transfer twice — safe retries over flaky networks.
+def _idempotent_replay(key: str, endpoint: str):
+    """Return the stored response for a previously-seen key, or None."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT status_code, response FROM idempotency_keys WHERE key = ? AND endpoint = ?",
+            (key, endpoint)).fetchone()
+    if not row:
+        return None
+    return JSONResponse(status_code=row["status_code"],
+                        content=json.loads(row["response"]),
+                        headers={"X-Idempotent-Replay": "true"})
+
+
+def _store_idempotent(key: str, endpoint: str, status_code: int, body: dict) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO idempotency_keys (key, endpoint, status_code, response, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (key, endpoint, status_code, json.dumps(body), utcnow().isoformat()))
+        conn.commit()
 
 
 app = FastAPI(
@@ -197,8 +232,23 @@ class BillRequest(BaseModel):
 
 @app.get("/health", tags=["system"])
 def health():
-    """Liveness probe — always unauthenticated."""
-    return {"status": "ok", "auth_required": EXPECTED_API_KEY is not None}
+    """Liveness + readiness probe — always unauthenticated."""
+    info = {
+        "status": "ok",
+        "auth_required": EXPECTED_API_KEY is not None,
+        "version": "2.1.0",
+        "uptime_seconds": int(time.time() - _START_TIME),
+    }
+    try:
+        with get_db() as conn:
+            info["database"] = "ok"
+            info["journal_mode"] = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            info["users"] = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            info["transactions"] = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    except sqlite3.Error as e:
+        info["database"] = f"error: {e}"
+        info["status"] = "degraded"
+    return info
 
 
 @app.post("/users/register", dependencies=[AUTH], tags=["users"])
@@ -252,11 +302,20 @@ def withdraw(req: TransactionRequest):
 
 
 @app.post("/transactions/transfer", dependencies=[AUTH], tags=["transactions"])
-def transfer(req: TransferRequest):
-    success, msg = txn_mgr.transfer(req.sender_phone, req.receiver_phone, req.amount, req.description)
+def transfer(req: TransferRequest, request: Request):
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key:
+        replay = _idempotent_replay(idempotency_key, "transfer")
+        if replay is not None:
+            return replay
+    success, msg, txn = txn_mgr.transfer_with_ref(
+        req.sender_phone, req.receiver_phone, req.amount, req.description)
     if not success:
         raise HTTPException(status_code=400, detail=msg)
-    return {"message": msg}
+    body = {"message": msg, "reference": txn.id if txn else None}
+    if idempotency_key:
+        _store_idempotent(idempotency_key, "transfer", 200, body)
+    return body
 
 
 @app.post("/transactions/pay-bill", dependencies=[AUTH], tags=["transactions"])
