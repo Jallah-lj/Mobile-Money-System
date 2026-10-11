@@ -1,16 +1,23 @@
-"""Tier 1 security pack: API rate limiting (unit + middleware via TestClient)."""
+"""Tier 1 security pack: API rate limiting (unit + middleware via TestClient).
 
+The limiter is DB-backed (rate_limit_hits table), so unit tests run against
+the per-test tmp database and limits are shared across limiter instances —
+which is exactly what makes them shared across server processes.
+"""
 
 from mobile_money_system.api import RateLimiter
+from mobile_money_system.database import get_db, init_db
 
 
-def test_rate_limiter_allows_then_blocks():
+def test_rate_limiter_allows_then_blocks(db_path):
+    init_db()
     rl = RateLimiter(max_requests=3, window_seconds=60)
     results = [rl.allow("client-a")[0] for _ in range(5)]
     assert results == [True, True, True, False, False]
 
 
-def test_rate_limiter_retry_after_positive():
+def test_rate_limiter_retry_after_positive(db_path):
+    init_db()
     rl = RateLimiter(max_requests=1, window_seconds=60)
     assert rl.allow("client-b")[0] is True
     allowed, retry_after = rl.allow("client-b")
@@ -18,7 +25,8 @@ def test_rate_limiter_retry_after_positive():
     assert 1 <= retry_after <= 60
 
 
-def test_rate_limiter_window_slides():
+def test_rate_limiter_window_slides(db_path):
+    init_db()
     rl = RateLimiter(max_requests=2, window_seconds=0.2)
     assert rl.allow("client-c")[0] is True
     assert rl.allow("client-c")[0] is True
@@ -28,23 +36,55 @@ def test_rate_limiter_window_slides():
     assert rl.allow("client-c")[0] is True
 
 
-def test_rate_limiter_keys_are_independent():
+def test_rate_limiter_keys_are_independent(db_path):
+    init_db()
     rl = RateLimiter(max_requests=1, window_seconds=60)
     assert rl.allow("client-d")[0] is True
     assert rl.allow("client-e")[0] is True
     assert rl.allow("client-d")[0] is False
 
 
+def test_rate_limiter_state_shared_across_instances(db_path):
+    """Two limiter instances share the database — simulating two server workers."""
+    init_db()
+    rl1 = RateLimiter(max_requests=3, window_seconds=60)
+    rl2 = RateLimiter(max_requests=3, window_seconds=60)
+    assert [rl1.allow("shared-key")[0] for _ in range(3)] == [True] * 3
+    # A second "worker" sees the same hits and is blocked
+    assert rl2.allow("shared-key")[0] is False
+
+
+def test_rate_limiter_survives_state_loss(db_path):
+    """Hits persist in the DB: a fresh limiter instance enforces the same limit."""
+    init_db()
+    rl = RateLimiter(max_requests=1, window_seconds=60)
+    assert rl.allow("persist-key")[0] is True
+    with get_db() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM rate_limit_hits WHERE key = 'persist-key'").fetchone()[0]
+    assert n == 1
+    rl2 = RateLimiter(max_requests=1, window_seconds=60)
+    assert rl2.allow("persist-key")[0] is False
+
+
+def test_rate_limiter_reset(db_path):
+    init_db()
+    rl = RateLimiter(max_requests=1, window_seconds=60)
+    assert rl.allow("reset-key")[0] is True
+    assert rl.allow("reset-key")[0] is False
+    rl.reset("reset-key")
+    assert rl.allow("reset-key")[0] is True
+
+
 def _clear_limiter_state(api_module):
-    for limiter in (api_module._general_limiter, api_module._login_limiter,
-                    api_module._register_limiter):
-        limiter._hits.clear()
+    """The limiters hold no in-memory state anymore; clear the hits table."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM rate_limit_hits")
+        conn.commit()
 
 
 def _ensure_schema():
     """api.py builds its manager singletons at import time (possibly before the
     db_path fixture patches DB_PATH) — make sure the patched tmp DB has tables."""
-    from mobile_money_system.database import init_db
     init_db()
 
 

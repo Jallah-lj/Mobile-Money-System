@@ -9,15 +9,18 @@ try:
     from audit import log_event
     from database import get_db, init_db
     from models import User
+    from models import utcnow as models_utcnow_iso
 except ImportError:
     from mobile_money_system.audit import log_event
     from mobile_money_system.database import get_db, init_db
     from mobile_money_system.models import User
+    from mobile_money_system.models import utcnow as models_utcnow_iso
 
 # --- Login protection configuration ---
 MAX_LOGIN_ATTEMPTS = 5          # Failed attempts before lockout
 LOCKOUT_WINDOW_SECONDS = 15 * 60  # Only failures inside this window count
 LOCKOUT_DURATION_SECONDS = 15 * 60  # How long the lockout lasts
+OTP_TTL_SECONDS = 5 * 60        # One-time passcodes expire after 5 minutes
 
 # --- Step-up authentication -------------------------------------------------
 # Debit transactions above this amount require a fresh OTP even when the user
@@ -26,10 +29,9 @@ HIGH_VALUE_STEPUP_THRESHOLD = 1000  # USD
 
 class UserManager:
     def __init__(self):
-        # We no longer load all users into memory
-        self.otp_storage: dict[str, dict] = {} # {phone: {'code': '1234', 'expiry': timestamp}}
-        self._failed_logins: dict[str, list[float]] = {}  # {phone: [timestamps of failures]}
-        self._locked_until: dict[str, float] = {}         # {phone: unix ts until which login is blocked}
+        # We no longer load all users into memory. OTP codes, failed-login
+        # counters and lockouts live in SQLite so they survive restarts and
+        # are shared across server processes/workers.
         init_db()  # Ensure schema exists (safe on fresh databases)
         self._ensure_admin_exists()
 
@@ -135,32 +137,51 @@ class UserManager:
     def is_locked_out(self, phone: str) -> tuple[bool, int]:
         """Returns (locked, seconds_remaining) for the given phone."""
         key = self.format_phone(phone)
-        until = self._locked_until.get(key, 0)
-        if until and time.time() < until:
-            return True, int(until - time.time())
-        if until:
+        now = time.time()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            row = cursor.execute(
+                "SELECT locked_until FROM account_lockouts WHERE phone = ?", (key,)).fetchone()
+            if not row:
+                return False, 0
+            until = row["locked_until"]
+            if now < until:
+                return True, int(until - now)
             # Lockout expired — clean up
-            del self._locked_until[key]
-        return False, 0
+            cursor.execute("DELETE FROM account_lockouts WHERE phone = ?", (key,))
+            conn.commit()
+            return False, 0
 
     def _record_failed_login(self, phone: str):
         key = self.format_phone(phone)
         now = time.time()
-        failures = [t for t in self._failed_logins.get(key, [])
-                    if now - t <= LOCKOUT_WINDOW_SECONDS]
-        failures.append(now)
-        self._failed_logins[key] = failures
-        if len(failures) >= MAX_LOGIN_ATTEMPTS:
-            self._locked_until[key] = now + LOCKOUT_DURATION_SECONDS
-            del self._failed_logins[key]
-            log_event(key, "ACCOUNT_LOCKED", target=key,
-                      details=f"Locked out after {MAX_LOGIN_ATTEMPTS} failed attempts",
-                      status="BLOCKED")
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Only failures inside the window count
+            cursor.execute("DELETE FROM login_attempts WHERE phone = ? AND at < ?",
+                           (key, now - LOCKOUT_WINDOW_SECONDS))
+            cursor.execute("INSERT INTO login_attempts (phone, at) VALUES (?, ?)", (key, now))
+            count = cursor.execute(
+                "SELECT COUNT(*) FROM login_attempts WHERE phone = ?", (key,)).fetchone()[0]
+            if count >= MAX_LOGIN_ATTEMPTS:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO account_lockouts (phone, locked_until) VALUES (?, ?)",
+                    (key, now + LOCKOUT_DURATION_SECONDS))
+                cursor.execute("DELETE FROM login_attempts WHERE phone = ?", (key,))
+                conn.commit()
+                log_event(key, "ACCOUNT_LOCKED", target=key,
+                          details=f"Locked out after {MAX_LOGIN_ATTEMPTS} failed attempts",
+                          status="BLOCKED")
+            else:
+                conn.commit()
 
     def _clear_failed_logins(self, phone: str):
         key = self.format_phone(phone)
-        self._failed_logins.pop(key, None)
-        self._locked_until.pop(key, None)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM login_attempts WHERE phone = ?", (key,))
+            cursor.execute("DELETE FROM account_lockouts WHERE phone = ?", (key,))
+            conn.commit()
 
     def login(self, phone: str, pin: str) -> User | None:
         # --- Brute-force protection ---
@@ -217,25 +238,39 @@ class UserManager:
             return {row['phone']: User.from_dict(dict(row)) for row in rows}
 
     def generate_otp(self, phone: str) -> str:
+        """Issue a one-time passcode. Stored hashed in SQLite (5 minutes expiry),
+        so OTPs survive restarts and work across server workers."""
         code = str(random.randint(100000, 999999))
-        self.otp_storage[phone] = {
-            'code': code,
-            'expiry': time.time() + 300 # 5 minutes expiry
-        }
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO otp_codes (phone, code_hash, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (phone, code_hash, time.time() + OTP_TTL_SECONDS, models_utcnow_iso().isoformat()))
+            conn.commit()
         return code
 
     def verify_otp(self, phone: str, code_attempt: str) -> bool:
         """Verify a one-time passcode. Only codes issued by generate_otp are valid."""
-        record = self.otp_storage.get(phone)
-        if not record:
-            return False
-        if time.time() > record['expiry']:
-            del self.otp_storage[phone]
-            return False
-        if record['code'] == code_attempt.strip():
-            del self.otp_storage[phone]
-            log_event(phone, "OTP_VERIFIED", target=phone)
-            return True
+        code_hash = hashlib.sha256(code_attempt.strip().encode()).hexdigest()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            row = cursor.execute(
+                "SELECT code_hash, expires_at FROM otp_codes WHERE phone = ?", (phone,)).fetchone()
+            if not row:
+                return False
+            if time.time() > row["expires_at"]:
+                cursor.execute("DELETE FROM otp_codes WHERE phone = ?", (phone,))
+                conn.commit()
+                return False
+            if row["code_hash"] == code_hash:
+                # Single-use: consume the code
+                cursor.execute("DELETE FROM otp_codes WHERE phone = ?", (phone,))
+                conn.commit()
+                log_event(phone, "OTP_VERIFIED", target=phone)
+                return True
+            conn.commit()
         log_event(phone, "OTP_FAILURE", target=phone, status="FAILURE",
                   details="Invalid OTP code submitted")
         return False

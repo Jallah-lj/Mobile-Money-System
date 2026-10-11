@@ -49,10 +49,39 @@ def test_lockout_expires(db_path):
         um.login("+2348012345678", "0000")
     assert um.is_locked_out("+2348012345678")[0]
 
-    # Simulate the lockout having expired
-    um._locked_until["+2348012345678"] = 0
+    # Simulate the lockout having expired (DB-backed state)
+    from mobile_money_system.database import get_db
+    with get_db() as conn:
+        conn.execute("UPDATE account_lockouts SET locked_until = 0 WHERE phone = ?",
+                     ("+2348012345678",))
+        conn.commit()
     assert not um.is_locked_out("+2348012345678")[0]
     assert um.login("+2348012345678", "1234") is not None
+
+
+def test_lockout_survives_new_manager_instance(db_path):
+    """Lockouts are DB-backed: a fresh manager (e.g. after a restart) still sees them."""
+    um = UserManager()
+    um.register("+2348012345678", "Alice", "1234", "q", "a")
+    for _ in range(MAX_LOGIN_ATTEMPTS):
+        um.login("+2348012345678", "0000")
+    assert um.is_locked_out("+2348012345678")[0]
+
+    um2 = UserManager()  # simulates a process restart
+    locked, _ = um2.is_locked_out("+2348012345678")
+    assert locked
+    assert um2.login("+2348012345678", "1234") is None  # still blocked
+
+
+def test_otp_survives_new_manager_instance(db_path):
+    """OTPs are DB-backed: a fresh manager can verify a code issued by another."""
+    um = UserManager()
+    um.register("+2348012345678", "Alice", "1234", "q", "a")
+    code = um.generate_otp("+2348012345678")
+
+    um2 = UserManager()  # simulates a process restart
+    assert um2.verify_otp("+2348012345678", code) is True
+    assert um2.verify_otp("+2348012345678", code) is False  # still single-use
 
 
 def test_otp_backdoor_removed(db_path):

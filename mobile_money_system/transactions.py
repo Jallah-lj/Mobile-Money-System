@@ -7,13 +7,13 @@ from decimal import Decimal
 
 try:
     from audit import log_event
-    from database import get_db, init_db
+    from database import get_db, init_db, write_transaction
     from ledger import LedgerManager
     from models import Transaction, utcnow
     from users import UserManager
 except ImportError:
     from mobile_money_system.audit import log_event
-    from mobile_money_system.database import get_db, init_db
+    from mobile_money_system.database import get_db, init_db, write_transaction
     from mobile_money_system.ledger import LedgerManager
     from mobile_money_system.models import Transaction, utcnow
     from mobile_money_system.users import UserManager
@@ -78,13 +78,23 @@ class TransactionManager:
         except Exception:
             pass
 
-    def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
+    # --- Atomic money movement -------------------------------------------
+    # Every balance change runs inside ONE SQLite write transaction
+    # (BEGIN IMMEDIATE): the balance is re-read and re-checked under the
+    # write lock, and the transaction record, the ledger entries and the new
+    # balance are written together — committing or rolling back as a unit.
+    # Two concurrent transfers can never both spend the same money
+    # (no double-spend), and a crash mid-transfer leaves no partial state.
+
+    @staticmethod
+    def _make_txn(sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
+        """Build a Transaction object (no database write)."""
         # Generate a standard reference number (e.g., TXN-12345678-ABCD)
         timestamp_part = int(time.time())
         random_part = str(uuid.uuid4())[:8].upper()
         t_id = f"TXN-{timestamp_part}-{random_part}"
 
-        t = Transaction(
+        return Transaction(
             id=t_id,
             sender_phone=sender,
             receiver_phone=receiver,
@@ -98,14 +108,43 @@ class TransactionManager:
             flag_reason=flag_reason
         )
 
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-            INSERT INTO transactions (id, sender_phone, receiver_phone, amount, currency, type, timestamp, description, status, flagged, flag_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (t.id, t.sender_phone, t.receiver_phone, str(t.amount), t.currency, t.type, t.timestamp, t.description, t.status, 1 if t.flagged else 0, t.flag_reason))
-            conn.commit()
+    @staticmethod
+    def _insert_txn(cur, t: Transaction) -> None:
+        cur.execute('''
+        INSERT INTO transactions (id, sender_phone, receiver_phone, amount, currency, type, timestamp, description, status, flagged, flag_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (t.id, t.sender_phone, t.receiver_phone, str(t.amount), t.currency, t.type, t.timestamp, t.description, t.status, 1 if t.flagged else 0, t.flag_reason))
 
+    @staticmethod
+    def _insert_ledger_entries(cur, entries) -> None:
+        for e in entries:
+            cur.execute('''
+            INSERT INTO ledger (id, transaction_id, account_id, amount, timestamp, description)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (e.id, e.transaction_id, e.account_id, str(e.amount), e.timestamp, e.description))
+
+    @staticmethod
+    def _get_balance(cur, phone: str) -> Decimal | None:
+        """Read a user's balance inside the current write transaction."""
+        row = cur.execute("SELECT balance FROM users WHERE phone = ?", (phone,)).fetchone()
+        return Decimal(row["balance"]) if row else None
+
+    @staticmethod
+    def _set_balance(cur, phone: str, balance: Decimal) -> None:
+        cur.execute("UPDATE users SET balance = ? WHERE phone = ?", (str(balance), phone))
+
+    @staticmethod
+    def _entries_balanced(entries) -> bool:
+        """Double-entry invariant: every posted batch must sum to zero."""
+        return sum((e.amount for e in entries), Decimal("0.0")) == Decimal("0.0")
+
+    def _create_transaction_record(self, sender: str, receiver: str, amount: Decimal, t_type: str, description: str = "", currency: str = "USD", flagged: bool = False, flag_reason: str = "", status: str = "COMPLETED") -> Transaction:
+        t = self._make_txn(sender, receiver, amount, t_type, description=description,
+                           currency=currency, flagged=flagged, flag_reason=flag_reason,
+                           status=status)
+        with get_db() as conn:
+            self._insert_txn(conn.cursor(), t)
+            conn.commit()
         return t
 
     def get_transaction(self, t_id: str) -> Transaction | None:
@@ -131,13 +170,8 @@ class TransactionManager:
 
         t_type = "ADMIN_CREDIT" if is_credit else "ADMIN_DEBIT"
 
-        # Adjust Balance
-        new_balance = user.balance + amount_decimal if is_credit else user.balance - amount_decimal
-        if not is_credit and new_balance < 0:
-             return False, "Insufficient funds"
-
-        # Log Transaction
-        txn = self._create_transaction_record(
+        # Build the record + a balanced double-entry ledger batch up front
+        txn = self._make_txn(
             sender="ADMIN",
             receiver=phone,
             amount=abs(amount_decimal),
@@ -145,8 +179,36 @@ class TransactionManager:
             description=reason,
             currency=user.currency
         )
+        if is_credit:
+            entries = [
+                self.ledger.create_entry(txn.id, "SYSTEM_CASH", -abs(amount_decimal), "Admin Cash In"),
+                self.ledger.create_entry(txn.id, phone, abs(amount_decimal), "Admin Credit"),
+            ]
+        else:
+            entries = [
+                self.ledger.create_entry(txn.id, phone, -abs(amount_decimal), "Admin Debit"),
+                self.ledger.create_entry(txn.id, "SYSTEM_CASH", abs(amount_decimal), "Admin Cash Out"),
+            ]
+        if not self._entries_balanced(entries):
+            return False, "Transaction failed: Ledger imbalance."
 
-        self.user_manager.update_user(phone, balance=new_balance)
+        # Atomic: re-check + record + ledger + balance update in one transaction
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                balance = self._get_balance(cur, phone)
+                if balance is None:
+                    return False, "User not found"
+                new_balance = balance + amount_decimal if is_credit else balance - amount_decimal
+                if not is_credit and new_balance < 0:
+                    return False, "Insufficient funds"
+                self._insert_txn(cur, txn)
+                self._insert_ledger_entries(cur, entries)
+                self._set_balance(cur, phone, new_balance)
+        except sqlite3.Error as e:
+            return False, f"Transaction failed: {e}"
+
+        user.balance = new_balance
         log_event("ADMIN", t_type, target=txn.id,
                   details=f"{t_type} of {amount_decimal} for {phone}. Reason: {reason}")
         return True, "Balance adjusted successfully."
@@ -162,26 +224,10 @@ class TransactionManager:
 
         # Reverse Logic based on types
         if txn.type in ["TRANSFER", "PAYMENT", "BILL_PAY"]:
-             sender = self.user_manager.get_user(txn.sender_phone)
-             receiver = self.user_manager.get_user(txn.receiver_phone)
-
-             if not sender:
-                 return False, "Sender account missing"
-             # Receiver might be external (BILL_PAY), handle carefully
-
-             # Credit Sender
-             sender.balance += txn.amount
-
-             # Debit Receiver if internal User
-             if receiver:
-                 receiver.balance -= txn.amount
-
-             self.user_manager.update_user(sender.phone, balance=sender.balance)
-             if receiver:
-                 self.user_manager.update_user(receiver.phone, balance=receiver.balance)
-
-             # Log Reversal
-             self._create_transaction_record(
+             # Atomic: re-read both balances under the write lock, apply the
+             # reversal, post the reversal ledger batch, flag the original —
+             # all in one transaction.
+             rev = self._make_txn(
                  sender=txn.receiver_phone,
                  receiver=txn.sender_phone,
                  amount=txn.amount,
@@ -189,11 +235,33 @@ class TransactionManager:
                  description=f"Reversal of {txn.id}",
                  currency=txn.currency
              )
+             entries = [
+                 self.ledger.create_entry(rev.id, txn.sender_phone, txn.amount, "Reversal Credit"),
+                 self.ledger.create_entry(rev.id, txn.receiver_phone, -txn.amount, "Reversal Debit"),
+             ]
+             if not self._entries_balanced(entries):
+                 return False, "Reversal failed: Ledger imbalance."
 
-             with get_db() as conn:
-                 cursor = conn.cursor()
-                 cursor.execute("UPDATE transactions SET flagged = 1, flag_reason = flag_reason || ' [REVERSED]' WHERE id = ?", (transaction_id,))
-                 conn.commit()
+             try:
+                 with write_transaction() as conn:
+                     cur = conn.cursor()
+                     sender_balance = self._get_balance(cur, txn.sender_phone)
+                     if sender_balance is None:
+                         return False, "Sender account missing"
+                     # Credit Sender
+                     self._set_balance(cur, txn.sender_phone, sender_balance + txn.amount)
+
+                     # Debit Receiver if internal User (receiver might be external, e.g. BILL_PAY)
+                     receiver_balance = self._get_balance(cur, txn.receiver_phone)
+                     if receiver_balance is not None:
+                         self._set_balance(cur, txn.receiver_phone, receiver_balance - txn.amount)
+
+                     # Log Reversal
+                     self._insert_txn(cur, rev)
+                     self._insert_ledger_entries(cur, entries)
+                     cur.execute("UPDATE transactions SET flagged = 1, flag_reason = flag_reason || ' [REVERSED]' WHERE id = ?", (transaction_id,))
+             except sqlite3.Error as e:
+                 return False, f"Reversal failed: {e}"
 
              return True, "Transaction reversed."
 
@@ -260,8 +328,8 @@ class TransactionManager:
         # AML Check
         flagged, flag_reason = self._assess_aml(phone, amount_decimal)
 
-        # 1. Create Transaction ID
-        txn = self._create_transaction_record(
+        # Build the record + a balanced double-entry batch (sums to zero)
+        txn = self._make_txn(
             sender="SYSTEM",
             receiver=phone,
             amount=amount_decimal,
@@ -271,22 +339,32 @@ class TransactionManager:
             flagged=flagged,
             flag_reason=flag_reason
         )
-
         entries = [
-            self.ledger.create_entry(txn.id, "SYSTEM_CASH", -amount_decimal, "Cash In"), # Debit Cash (Asset) - Wait, if we treat + as User Balance Increase (Liability), then Asset Increase should be ... ?
+            self.ledger.create_entry(txn.id, "SYSTEM_CASH", -amount_decimal, "Cash In"),
             self.ledger.create_entry(txn.id, phone, amount_decimal, "Deposit to Wallet")
         ]
-
-        if self.ledger.post_entries(entries):
-            user.balance += amount_decimal
-            self.user_manager.update_user(phone, balance=user.balance)
-            log_event(phone, "DEPOSIT", target=txn.id, details=f"Deposited {amount_decimal}")
-            if flagged:
-                self._alert_aml(txn, flag_reason)
-            self._emit("DEPOSIT", txn)
-            return True, f"Deposited {amount_decimal} successfully."
-        else:
+        if not self._entries_balanced(entries):
             return False, "Transaction failed: Ledger imbalance."
+
+        # Atomic: record + ledger + balance credit in one write transaction
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                balance = self._get_balance(cur, phone)
+                if balance is None:
+                    return False, "User not found"
+                self._insert_txn(cur, txn)
+                self._insert_ledger_entries(cur, entries)
+                self._set_balance(cur, phone, balance + amount_decimal)
+        except sqlite3.Error as e:
+            return False, f"Transaction failed: {e}"
+
+        user.balance += amount_decimal
+        log_event(phone, "DEPOSIT", target=txn.id, details=f"Deposited {amount_decimal}")
+        if flagged:
+            self._alert_aml(txn, flag_reason)
+        self._emit("DEPOSIT", txn)
+        return True, f"Deposited {amount_decimal} successfully."
 
     def withdraw(self, phone: str, amount: float, description: str = "Withdrawal") -> tuple[bool, str]:
         amount_decimal = Decimal(str(amount))
@@ -311,7 +389,7 @@ class TransactionManager:
         flagged, flag_reason = self._assess_aml(phone, amount_decimal)
 
         # 1. Main Withdrawal
-        txn_wd = self._create_transaction_record(
+        txn_wd = self._make_txn(
             sender=phone,
             receiver="SYSTEM",
             amount=amount_decimal,
@@ -321,7 +399,6 @@ class TransactionManager:
             flagged=flagged,
             flag_reason=flag_reason
         )
-
         entries_wd = [
             self.ledger.create_entry(txn_wd.id, phone, -amount_decimal, "Withdrawal from Wallet"),
             self.ledger.create_entry(txn_wd.id, "SYSTEM_CASH", amount_decimal, "Cash Out")
@@ -329,8 +406,9 @@ class TransactionManager:
 
         # 2. Fee (no fee records are created when the fee is zero)
         entries_fee = []
+        txn_fee = None
         if fee > 0:
-            txn_fee = self._create_transaction_record(
+            txn_fee = self._make_txn(
                 sender=phone,
                 receiver="SYSTEM_REVENUE",
                 amount=fee,
@@ -343,17 +421,35 @@ class TransactionManager:
                 self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
             ]
 
-        if self.ledger.post_entries(entries_wd) and self.ledger.post_entries(entries_fee):
-            user.balance -= total_deduction
-            self.user_manager.update_user(phone, balance=user.balance)
-            log_event(phone, "WITHDRAWAL", target=txn_wd.id,
-                      details=f"Withdrew {amount_decimal} (fee {fee})")
-            if flagged:
-                self._alert_aml(txn_wd, flag_reason)
-            self._emit("WITHDRAWAL", txn_wd)
-            return True, f"Withdrawn ${amount_decimal}."
-        else:
-            return False, "Transaction failed."
+        all_entries = entries_wd + entries_fee
+        if not self._entries_balanced(all_entries):
+            return False, "Transaction failed: Ledger imbalance."
+
+        # Atomic: re-check funds under the write lock, then record + ledger +
+        # balance debit in one transaction
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                balance = self._get_balance(cur, phone)
+                if balance is None:
+                    return False, "User not found"
+                if balance < total_deduction:
+                    return False, "Insufficient balance."
+                self._insert_txn(cur, txn_wd)
+                if txn_fee is not None:
+                    self._insert_txn(cur, txn_fee)
+                self._insert_ledger_entries(cur, all_entries)
+                self._set_balance(cur, phone, balance - total_deduction)
+        except sqlite3.Error as e:
+            return False, f"Transaction failed: {e}"
+
+        user.balance -= total_deduction
+        log_event(phone, "WITHDRAWAL", target=txn_wd.id,
+                  details=f"Withdrew {amount_decimal} (fee {fee})")
+        if flagged:
+            self._alert_aml(txn_wd, flag_reason)
+        self._emit("WITHDRAWAL", txn_wd)
+        return True, f"Withdrawn ${amount_decimal}."
 
     def transfer(self, sender_phone: str, receiver_phone: str, amount: float, description: str = "Transfer") -> tuple[bool, str]:
         sender = self.user_manager.get_user(sender_phone)
@@ -389,7 +485,7 @@ class TransactionManager:
         flagged, flag_reason = self._assess_aml(sender_phone, amount_decimal)
 
         # 1. Transfer
-        txn_tr = self._create_transaction_record(
+        txn_tr = self._make_txn(
             sender=sender_phone,
             receiver=receiver_phone,
             amount=amount_decimal,
@@ -406,13 +502,14 @@ class TransactionManager:
 
         # 2. Fee (no fee records are created when the fee is zero)
         entries_fee = []
+        txn_fee = None
         if fee > 0:
-            txn_fee = self._create_transaction_record(
-                sender_phone,
-                "SYSTEM_REVENUE",
-                fee,
-                "FEE",
-                "Fee for Transfer",
+            txn_fee = self._make_txn(
+                sender=sender_phone,
+                receiver="SYSTEM_REVENUE",
+                amount=fee,
+                t_type="FEE",
+                description="Fee for Transfer",
                 currency=sender.currency
             )
             entries_fee = [
@@ -420,22 +517,43 @@ class TransactionManager:
                 self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
             ]
 
-        if self.ledger.post_entries(entries_tr) and self.ledger.post_entries(entries_fee):
-            sender.balance -= total_deduction
-            receiver.balance += amount_decimal
-            self.user_manager.update_user(sender_phone, balance=sender.balance)
-            self.user_manager.update_user(receiver_phone, balance=receiver.balance)
-            log_event(sender_phone, "TRANSFER", target=txn_tr.id,
-                      details=f"{amount_decimal} -> {receiver_phone} (fee {fee})"
-                      + (f" - {description}" if description else "")
-                      + (" [AML FLAGGED: " + flag_reason + "]" if flagged else ""),
-                      status="SUCCESS")
-            if flagged:
-                self._alert_aml(txn_tr, flag_reason)
-            self._emit("TRANSFER", txn_tr)
-            return True, "Transfer successful"
-        else:
-            return False, "Transaction failed"
+        all_entries = entries_tr + entries_fee
+        if not self._entries_balanced(all_entries):
+            return False, "Transaction failed: Ledger imbalance."
+
+        # Atomic: re-read both balances under the write lock, re-check the
+        # sender's funds, then record + ledger + both balance updates in one
+        # transaction — two racing transfers can never both spend the same
+        # money.
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                sender_balance = self._get_balance(cur, sender_phone)
+                receiver_balance = self._get_balance(cur, receiver_phone)
+                if sender_balance is None or receiver_balance is None:
+                    return False, "Sender not found" if sender_balance is None else "Receiver not found"
+                if sender_balance < total_deduction:
+                    return False, "Insufficient balance."
+                self._insert_txn(cur, txn_tr)
+                if txn_fee is not None:
+                    self._insert_txn(cur, txn_fee)
+                self._insert_ledger_entries(cur, all_entries)
+                self._set_balance(cur, sender_phone, sender_balance - total_deduction)
+                self._set_balance(cur, receiver_phone, receiver_balance + amount_decimal)
+        except sqlite3.Error as e:
+            return False, f"Transaction failed: {e}"
+
+        sender.balance -= total_deduction
+        receiver.balance += amount_decimal
+        log_event(sender_phone, "TRANSFER", target=txn_tr.id,
+                  details=f"{amount_decimal} -> {receiver_phone} (fee {fee})"
+                  + (f" - {description}" if description else "")
+                  + (" [AML FLAGGED: " + flag_reason + "]" if flagged else ""),
+                  status="SUCCESS")
+        if flagged:
+            self._alert_aml(txn_tr, flag_reason)
+        self._emit("TRANSFER", txn_tr)
+        return True, "Transfer successful"
 
     def pay_bill(self, phone: str, amount: float, biller_name: str, biller_id: str, description: str = "Bill Payment") -> tuple[bool, str]:
         user = self.user_manager.get_user(phone)
@@ -461,12 +579,12 @@ class TransactionManager:
 
         # 1. Bill Payment
         full_desc = f"{biller_name} ({biller_id}) - {description}"
-        txn_bill = self._create_transaction_record(
-            phone,
-            "BILLER_SYSTEM",
-            amount_decimal,
-            "BILL_PAYMENT",
-            full_desc,
+        txn_bill = self._make_txn(
+            sender=phone,
+            receiver="BILLER_SYSTEM",
+            amount=amount_decimal,
+            t_type="BILL_PAYMENT",
+            description=full_desc,
             currency=user.currency,
             flagged=flagged,
             flag_reason=flag_reason
@@ -478,13 +596,14 @@ class TransactionManager:
 
         # 2. Fee
         entries_fee = []
+        txn_fee = None
         if fee > 0:
-            txn_fee = self._create_transaction_record(
-                phone,
-                "SYSTEM_REVENUE",
-                fee,
-                "FEE",
-                f"Fee: {biller_name}",
+            txn_fee = self._make_txn(
+                sender=phone,
+                receiver="SYSTEM_REVENUE",
+                amount=fee,
+                t_type="FEE",
+                description=f"Fee: {biller_name}",
                 currency=user.currency
             )
             entries_fee = [
@@ -492,17 +611,35 @@ class TransactionManager:
                 self.ledger.create_entry(txn_fee.id, "SYSTEM_REVENUE", fee, "Fee Revenue")
             ]
 
-        if self.ledger.post_entries(entries_bill) and self.ledger.post_entries(entries_fee):
-            user.balance -= total_deduction
-            self.user_manager.update_user(phone, balance=user.balance)
-            log_event(phone, "BILL_PAYMENT", target=txn_bill.id,
-                      details=f"{biller_name} {amount_decimal} (fee {fee})")
-            if flagged:
-                self._alert_aml(txn_bill, flag_reason)
-            self._emit("BILL_PAYMENT", txn_bill)
-            return True, f"Paid {biller_name} successfully."
-        else:
-            return False, "Transaction Failed"
+        all_entries = entries_bill + entries_fee
+        if not self._entries_balanced(all_entries):
+            return False, "Transaction failed: Ledger imbalance."
+
+        # Atomic: re-check funds under the write lock, then record + ledger +
+        # balance debit in one transaction
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                balance = self._get_balance(cur, phone)
+                if balance is None:
+                    return False, "User not found"
+                if balance < total_deduction:
+                    return False, "Insufficient balance."
+                self._insert_txn(cur, txn_bill)
+                if txn_fee is not None:
+                    self._insert_txn(cur, txn_fee)
+                self._insert_ledger_entries(cur, all_entries)
+                self._set_balance(cur, phone, balance - total_deduction)
+        except sqlite3.Error as e:
+            return False, f"Transaction failed: {e}"
+
+        user.balance -= total_deduction
+        log_event(phone, "BILL_PAYMENT", target=txn_bill.id,
+                  details=f"{biller_name} {amount_decimal} (fee {fee})")
+        if flagged:
+            self._alert_aml(txn_bill, flag_reason)
+        self._emit("BILL_PAYMENT", txn_bill)
+        return True, f"Paid {biller_name} successfully."
 
     def request_money(self, requester_phone: str, payer_phone: str, amount: float, description: str = "Money Request") -> tuple[bool, str]:
         # Just create a record with PENDING status. No money moves yet.

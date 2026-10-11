@@ -1,16 +1,43 @@
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 # The SQLite file location can be overridden (e.g. a Docker volume mount).
 DB_PATH = os.environ.get("MMS_DB_PATH", "mobile_money.db")
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    # Wait for the write lock instead of failing immediately when another
+    # connection (thread/process) is mid-write.
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
+    finally:
+        conn.close()
+
+@contextmanager
+def write_transaction():
+    """A single serialized write transaction: BEGIN IMMEDIATE ... COMMIT.
+
+    BEGIN IMMEDIATE takes the database write lock up front, so a
+    read-check-write sequence inside this block is atomic — two concurrent
+    transfers can never both spend the same balance (no double-spend).
+    Rolls back on any exception.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        conn.commit()
     finally:
         conn.close()
 
@@ -26,6 +53,12 @@ def _add_column(cursor, table: str, column: str, definition: str):
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
+
+        # Write-Ahead Logging: readers never block the writer and vice versa,
+        # which is what makes concurrent balance updates safe. (Persisted in
+        # the database file; falls back silently on filesystems without WAL.)
+        with suppress(sqlite3.Error):
+            cursor.execute("PRAGMA journal_mode=WAL")
 
         # Users Table
         cursor.execute('''
@@ -207,6 +240,97 @@ def init_db():
             review_note TEXT
         )
         ''')
+
+        # OTP Codes (replaces the old in-memory dict — survives restarts and is
+        # shared across processes; only a hash of the code is stored)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS otp_codes (
+            phone TEXT PRIMARY KEY,
+            code_hash TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
+        # Login Attempts (brute-force tracking, DB-backed)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            at REAL NOT NULL
+        )
+        ''')
+
+        # Account Lockouts (DB-backed: survive restarts, shared across workers)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS account_lockouts (
+            phone TEXT PRIMARY KEY,
+            locked_until REAL NOT NULL
+        )
+        ''')
+
+        # Rate Limit Hits (DB-backed sliding window, shared across processes)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rate_limit_hits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            at REAL NOT NULL
+        )
+        ''')
+
+        # Idempotency Keys (API: replay-safe duplicate POSTs)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key TEXT PRIMARY KEY,
+            endpoint TEXT NOT NULL,
+            status_code INTEGER NOT NULL,
+            response TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        ''')
+
+        # App Settings (operator configuration: fees, AML thresholds, retention)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        ''')
+
+        # Backups Registry (snapshot metadata for the admin backup tool)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS backups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            note TEXT
+        )
+        ''')
+
+        # --- Indexes for the hot query paths ---
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_phone ON sessions(phone)",
+            "CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ledger_transaction ON ledger(transaction_id)",
+            "CREATE INDEX IF NOT EXISTS idx_beneficiaries_owner ON beneficiaries(owner_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_owner ON scheduled_payments(owner_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_payments(next_run_at)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)",
+            "CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook ON webhook_deliveries(webhook_id)",
+            "CREATE INDEX IF NOT EXISTS idx_deletions_phone ON account_deletions(phone)",
+            "CREATE INDEX IF NOT EXISTS idx_notif_channels_phone ON notification_channels(phone)",
+            "CREATE INDEX IF NOT EXISTS idx_login_attempts_phone ON login_attempts(phone)",
+            "CREATE INDEX IF NOT EXISTS idx_rate_limit_key ON rate_limit_hits(key)",
+        ]
+        for _sql in indexes:
+            cursor.execute(_sql)
 
         # --- Schema migrations for existing databases ---
         _add_column(cursor, "users", "two_factor_enabled", "INTEGER DEFAULT 1")

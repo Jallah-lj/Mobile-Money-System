@@ -9,9 +9,8 @@ Security model:
 """
 
 import os
-import threading
+import sqlite3
 import time
-from collections import defaultdict, deque
 
 from fastapi import FastAPI, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse
@@ -20,12 +19,14 @@ from pydantic import BaseModel
 
 try:
     from .audit import get_audit_logs
+    from .database import get_db, write_transaction
     from .privacy import PrivacyManager
     from .transactions import TransactionManager
     from .users import UserManager
 except ImportError:
     # Dual import path: this module is also runnable as a top-level script module.
     from audit import get_audit_logs  # type: ignore[no-redef]
+    from database import get_db, write_transaction  # type: ignore[no-redef]
     from privacy import PrivacyManager  # type: ignore[no-redef]
     from transactions import TransactionManager  # type: ignore[no-redef]
     from users import UserManager  # type: ignore[no-redef]
@@ -36,34 +37,54 @@ EXPECTED_API_KEY = os.environ.get(API_KEY_ENV_VAR)
 
 
 # --- Rate limiting -----------------------------------------------------------
-# Sliding-window, in-memory limiter. Per-endpoint-class limits protect the API
-# from brute-force and abuse without any external dependencies. (Account-level
-# lockout for logins is additionally enforced by UserManager.)
+# Sliding-window limiter backed by SQLite. Per-endpoint-class limits protect
+# the API from brute-force and abuse without any external dependencies, and
+# because hits live in the database they are enforced across server
+# processes/workers and survive restarts. (Account-level lockout for logins
+# is additionally enforced by UserManager.)
 class RateLimiter:
     """Sliding-window rate limiter: at most `max_requests` per `window_seconds`."""
 
-    def __init__(self, max_requests: int, window_seconds: float):
+    def __init__(self, max_requests: int, window_seconds: float, key_prefix: str = ""):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
+        self.key_prefix = key_prefix
+
+    def _scoped(self, key: str) -> str:
+        return f"{self.key_prefix}{key}" if self.key_prefix else key
 
     def allow(self, key: str) -> tuple[bool, int]:
-        """Record a hit for `key`. Returns (allowed, retry_after_seconds)."""
-        now = time.monotonic()
-        with self._lock:
-            hits = self._hits[key]
-            while hits and now - hits[0] > self.window_seconds:
-                hits.popleft()
-            if len(hits) >= self.max_requests:
-                retry_after = int(self.window_seconds - (now - hits[0])) + 1
-                return False, max(retry_after, 1)
-            hits.append(now)
+        """Record a hit for `key`. Returns (allowed, retry_after_seconds).
+
+        One short write transaction per call: prune expired hits, count the
+        hits inside the window, insert the new hit. Serialized by SQLite's
+        write lock, so concurrent workers cannot overshoot the limit.
+        """
+        key = self._scoped(key)
+        now = time.time()
+        window_start = now - self.window_seconds
+        try:
+            with write_transaction() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM rate_limit_hits WHERE key = ? AND at < ?",
+                            (key, window_start))
+                row = cur.execute(
+                    "SELECT COUNT(*) AS n, MIN(at) AS oldest FROM rate_limit_hits WHERE key = ?",
+                    (key,)).fetchone()
+                if row["n"] >= self.max_requests:
+                    retry_after = int(self.window_seconds - (now - row["oldest"])) + 1
+                    return False, max(retry_after, 1)
+                cur.execute("INSERT INTO rate_limit_hits (key, at) VALUES (?, ?)", (key, now))
+                return True, 0
+        except sqlite3.Error:
+            # Fail open if the database is unavailable — availability first.
             return True, 0
 
     def reset(self, key: str) -> None:
-        with self._lock:
-            self._hits.pop(key, None)
+        """Clear all recorded hits for `key`."""
+        with get_db() as conn:
+            conn.execute("DELETE FROM rate_limit_hits WHERE key = ?", (self._scoped(key),))
+            conn.commit()
 
 
 # Per-IP limits per endpoint class
