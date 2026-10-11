@@ -243,6 +243,11 @@ if not current_user:
     col1, col2, col3 = st.columns([1, 2, 1])
 
     with col2:
+        # Pending navigation (e.g. the "Log in" link on the register page) is
+        # applied BEFORE the nav widget is instantiated — assigning its key
+        # afterwards would raise StreamlitWidgetAlreadyInstantiatedError.
+        if "pending_auth_nav" in st.session_state:
+            st.session_state["auth_nav"] = st.session_state.pop("pending_auth_nav")
         selected = option_menu(
             menu_title=None,
             options=[TR("login"), TR("register")],
@@ -362,50 +367,90 @@ if not current_user:
                         st.warning("User not found.")
 
         elif selected == TR("register"):
-            with st.form("register_form"):
-                st.markdown(f"### <i class='fa-solid fa-user-plus'></i> {TR('register')}", unsafe_allow_html=True)
-                new_name = st.text_input("Full Name")
-                new_phone = st.text_input(TR("phone"))
-                new_pin = st.text_input("Create PIN (4 digits)", type="password", max_chars=4)
+            # --- Professional two-column layout: brand hero + form card ---
+            hero_col, form_col = st.columns([1.05, 1], gap="large")
 
-                st.markdown("---")
-                st.markdown("**Security Question (for Account Recovery)**")
-                currency = st.selectbox("Preferred Currency", ["USD", "EUR", "KES", "GBP"], index=0)
-                sec_q = st.selectbox("Select a Question", [
-                    "What is your mother's maiden name?",
-                    "What was the name of your first pet?",
-                    "Which city were you born in?",
-                    "What is your favorite food?"
-                ])
-                sec_a = st.text_input("Answer")
+            with hero_col:
+                st.markdown(f"""
+                <div class="auth-hero">
+                    <div class="auth-hero-brand">
+                        <i class="fa-solid fa-wallet"></i>
+                        <span>{TR('app_title')}</span>
+                    </div>
+                    <div class="auth-hero-title">{TR('reg_title')}</div>
+                    <div class="auth-hero-sub">{TR('reg_subtitle')}</div>
+                    <div class="auth-trust">
+                        <div class="auth-trust-item"><i class="fa-solid fa-gift"></i><span>{TR('reg_trust_free')}</span></div>
+                        <div class="auth-trust-item"><i class="fa-solid fa-shield-halved"></i><span>{TR('reg_trust_secure')}</span></div>
+                        <div class="auth-trust-item"><i class="fa-solid fa-bolt"></i><span>{TR('reg_trust_fast')}</span></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-                st.markdown("---")
-                with st.expander("Terms of Service & Privacy Policy"):
-                    policy_doc = privacy_manager.get_active_document("privacy_policy")
-                    terms_doc = privacy_manager.get_active_document("terms_of_service")
-                    if policy_doc:
-                        st.caption(f"Privacy Policy v{policy_doc['version']} — published {policy_doc['published_at'][:10]}")
-                        st.markdown(policy_doc["content"])
-                    if terms_doc:
-                        st.caption(f"Terms of Service v{terms_doc['version']} — published {terms_doc['published_at'][:10]}")
-                        st.markdown(terms_doc["content"])
-                accept_legal = st.checkbox("I accept the Terms of Service and the Privacy Policy")
+            with form_col:
+                with st.form("register_form"):
+                    st.markdown(f"### <i class='fa-solid fa-user-plus'></i> {TR('register')}")
+                    st.caption(TR('reg_form_caption'))
 
-                reg_submitted = st.form_submit_button(TR("register"))
-                if reg_submitted:
-                    if not validate_phone(new_phone):
-                        st.error("Invalid Phone Number (Use international format e.g., +234...)")
-                    elif not accept_legal:
-                        st.error("You must accept the Terms of Service and the Privacy Policy to register.")
-                    elif new_name and new_phone and len(new_pin) == 4 and new_pin.isdigit() and sec_a:
-                        success, msg = user_manager.register(new_phone, new_name, new_pin, sec_q, sec_a, currency)
-                        if success:
-                            privacy_manager.accept_current_policies(user_manager.format_phone(new_phone))
-                            st.success(f"Success! {msg}. Please Login.")
+                    st.markdown(f"<div class='auth-section'>{TR('reg_personal')}</div>", unsafe_allow_html=True)
+                    new_name = st.text_input(TR("reg_full_name"), placeholder="Jane Doe")
+                    new_phone = st.text_input(TR("phone"), placeholder="+231776462520")
+                    st.caption(TR("reg_phone_hint"))
+
+                    st.markdown(f"<div class='auth-section'>{TR('reg_security')}</div>", unsafe_allow_html=True)
+                    new_pin = st.text_input(TR("pin"), type="password", max_chars=4, placeholder="••••")
+                    st.caption(TR("reg_pin_hint"))
+                    sec_q = st.selectbox(TR("reg_sec_q"), [
+                        TR("reg_q1"), TR("reg_q2"), TR("reg_q3"), TR("reg_q4")
+                    ])
+                    st.caption(TR("reg_sec_q_hint"))
+                    sec_a = st.text_input(TR("reg_sec_a"))
+
+                    st.markdown(f"<div class='auth-section'>{TR('reg_prefs')}</div>", unsafe_allow_html=True)
+                    currency = st.selectbox(TR("reg_currency"), ["USD", "EUR", "KES", "GBP"], index=0)
+
+                    st.markdown(f"<div class='auth-section'>{TR('reg_legal')}</div>", unsafe_allow_html=True)
+                    with st.expander(TR("reg_read_docs")):
+                        policy_doc = privacy_manager.get_active_document("privacy_policy")
+                        terms_doc = privacy_manager.get_active_document("terms_of_service")
+                        if policy_doc:
+                            st.caption(f"Privacy Policy v{policy_doc['version']} — published {policy_doc['published_at'][:10]}")
+                            st.markdown(policy_doc["content"])
+                        if terms_doc:
+                            st.caption(f"Terms of Service v{terms_doc['version']} — published {terms_doc['published_at'][:10]}")
+                            st.markdown(terms_doc["content"])
+                    accept_legal = st.checkbox(TR("reg_consent"))
+
+                    reg_submitted = st.form_submit_button(TR("reg_submit"), type="primary", width="stretch")
+                    if reg_submitted:
+                        errors = []
+                        if not new_name.strip():
+                            errors.append(TR("reg_err_name"))
+                        if not validate_phone(new_phone):
+                            errors.append(TR("reg_err_phone"))
+                        if not (len(new_pin) == 4 and new_pin.isdigit()):
+                            errors.append(TR("reg_err_pin"))
+                        if not sec_a.strip():
+                            errors.append(TR("reg_err_sec"))
+                        if not accept_legal:
+                            errors.append(TR("reg_err_consent"))
+                        if errors:
+                            for err in errors:
+                                st.error(err)
                         else:
-                            st.error(f"Error: {msg}")
-                    else:
-                        st.warning("Please fill all fields correctly.")
+                            success, msg = user_manager.register(new_phone, new_name, new_pin, sec_q, sec_a, currency)
+                            if success:
+                                privacy_manager.accept_current_policies(user_manager.format_phone(new_phone))
+                                st.success(f"Success! {msg}. Please Login.")
+                            else:
+                                st.error(f"Error: {msg}")
+
+                st.markdown(
+                    f"<div class='auth-login-row'>{TR('reg_have_account')}</div>",
+                    unsafe_allow_html=True)
+                if st.button(TR("reg_login_link"), key="go_login"):
+                    st.session_state["pending_auth_nav"] = TR("login")
+                    st.rerun()
 
 else:
     # DEBUG: Check Role

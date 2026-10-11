@@ -388,6 +388,65 @@ def get_custom_css(dark: bool = False) -> str:
             color: var(--mms-text);
         }}
 
+        /* --- Auth pages (register / login) --- */
+        .auth-hero {{
+            background: var(--mms-wallet-gradient);
+            color: white;
+            padding: 32px 28px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0, 200, 83, 0.3);
+            height: 100%;
+        }}
+        .auth-hero-brand {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            letter-spacing: 0.4px;
+            opacity: 0.95;
+            margin-bottom: 22px;
+        }}
+        .auth-hero-brand i {{ font-size: 1.2rem; }}
+        .auth-hero-title {{
+            color: white;
+            font-size: 1.9rem;
+            font-weight: 800;
+            line-height: 1.15;
+            margin: 0 0 10px 0;
+        }}
+        .auth-hero-sub {{
+            color: rgba(255, 255, 255, 0.92);
+            font-size: 1rem;
+            margin: 0 0 24px 0;
+        }}
+        .auth-trust {{ display: flex; flex-direction: column; gap: 12px; }}
+        .auth-trust-item {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 12px;
+            padding: 10px 14px;
+            font-size: 0.92rem;
+        }}
+        .auth-trust-item i {{ font-size: 1rem; }}
+        .auth-section {{
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            color: var(--mms-primary-deep);
+            margin: 14px 0 6px 0;
+        }}
+        .auth-login-row {{
+            text-align: center;
+            margin-top: 14px;
+            color: var(--mms-muted);
+            font-size: 0.9rem;
+        }}
+
         /* --- Dataframes / tables --- */
         [data-testid="stDataFrame"] {{
             border-radius: 12px;
