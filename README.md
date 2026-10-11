@@ -52,6 +52,28 @@ Everyone gets the same rates and limits:
 - **API key authentication** for the REST API (set `MMS_API_KEY`)
 - API responses never expose PIN hashes or security answers
 
+### 🔏 Data Privacy & Legal Compliance
+Aligned with the GDPR and Rwanda's Data Protection Law No. 058/2021:
+- **Consent ledger** — versioned, revocable consent (Terms, Privacy Policy,
+  marketing) recorded at registration on web, mobile app, and CLI; every
+  consent action is audit-logged
+- **Versioned legal documents** — Privacy Policy & Terms of Service with an
+  admin publish workflow; users are prompted to re-accept when a new version
+  goes live
+- **Right of access / portability** — self-service data export (JSON + CSV)
+  of everything the platform holds about you
+- **Right to rectification** — correct your own profile data (web + API)
+- **Right to erasure** — request account deletion with admin review; approved
+  deletions pseudonymize your phone number in retained financial records
+- **Right to object** — withdraw marketing consent at any time
+- **Data breach register** — breaches are recorded, tracked to resolution,
+  with the authority-report timestamp for the 72-hour notification rule
+  (admin Security Center)
+- **Data minimization & retention** — PINs/OTP codes stored hashed, ID
+  numbers masked, configurable automatic pruning of old security/ops rows
+- **Auditability** — every privacy-relevant action (consent, export,
+  rectification, deletion, breach) is written to the append-only audit log
+
 ### 💼 Personal Finance
 - **Insights dashboard**: monthly budget with over-budget alerts, 6-month
   income-vs-spending trend, spending by category, top recipients
@@ -140,11 +162,12 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-151 tests cover the transaction core, compliance (KYC/AML), money requests,
+181 tests cover the transaction core, compliance (KYC/AML), money requests,
 security hardening (lockout, OTP, audit trail, sessions, 2FA, API rate
 limiting), atomicity under concurrency, durable security state, async event
 dispatch, the background scheduler, beneficiaries, scheduled payments,
-analytics & statements, privacy data controls, backups, reconciliation,
+analytics & statements, privacy data controls (consent ledger, legal documents, rectification, breach
+register), backups, reconciliation,
 retention, idempotency, and the integrations (webhook signatures & delivery,
 notifications, tickets).
 CI runs the same suite on every push (`.github/workflows/tests.yml`) plus

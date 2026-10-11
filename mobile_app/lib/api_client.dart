@@ -120,6 +120,8 @@ class ApiClient {
     required String secQ,
     required String secA,
     String currency = 'USD',
+    bool acceptTerms = false,
+    bool acceptPrivacy = false,
   }) async {
     return _asMap(await _request('POST', '/auth/register', body: {
       'phone': phone,
@@ -128,6 +130,8 @@ class ApiClient {
       'sec_q': secQ,
       'sec_a': secA,
       'currency': currency,
+      'accept_terms': acceptTerms,
+      'accept_privacy': acceptPrivacy,
     }));
   }
 
@@ -316,4 +320,27 @@ class ApiClient {
 
   Future<Map<String, dynamic>> dataExport() async =>
       _asMap(await _request('GET', '/me/data-export'));
+
+  // --- Privacy law: legal documents, consent ledger, rectification -------------
+
+  /// The active version of a legal document: 'privacy_policy' | 'terms_of_service'.
+  Future<Map<String, dynamic>> legalDocument(String docType) async =>
+      _asMap(await _request('GET', '/privacy/$docType'));
+
+  /// Consent ledger + whether a new policy version needs acceptance.
+  Future<Map<String, dynamic>> myConsents() async =>
+      _asMap(await _request('GET', '/me/consents'));
+
+  /// Accept (or re-accept) a consent purpose: 'terms' | 'privacy' | 'marketing'.
+  Future<Map<String, dynamic>> acceptConsent(String purpose) async =>
+      _asMap(await _request('POST', '/me/consents', body: {'purpose': purpose}));
+
+  /// Withdraw consent (right to object / withdraw consent).
+  Future<void> revokeConsent(String purpose) async {
+    await _request('DELETE', '/me/consents/${Uri.encodeComponent(purpose)}');
+  }
+
+  /// Right to rectification: update your own profile data.
+  Future<Map<String, dynamic>> updateProfile(String name) async =>
+      _asMap(await _request('PATCH', '/me/profile', body: {'name': name}));
 }

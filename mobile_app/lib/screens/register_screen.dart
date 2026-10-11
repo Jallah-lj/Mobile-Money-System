@@ -20,7 +20,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _secAController = TextEditingController();
 
   bool _loading = false;
+  bool _acceptLegal = false;
   String? _error;
+  String? _policyText;
 
   @override
   void dispose() {
@@ -34,6 +36,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    if (!_acceptLegal) {
+      setState(() => _error = 'You must accept the Terms of Service and the Privacy Policy.');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -45,6 +51,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
         pin: _pinController.text.trim(),
         secQ: _secQController.text.trim(),
         secA: _secAController.text.trim(),
+        acceptTerms: true,
+        acceptPrivacy: true,
       );
       // Back to the login screen with the phone prefilled. If 2FA is enabled
       // (the platform default), logging in will continue at the OTP stage.
@@ -55,6 +63,42 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _showLegalDocuments() async {
+    if (_policyText != null) return;
+    try {
+      final policy = await widget.api.legalDocument('privacy_policy');
+      final terms = await widget.api.legalDocument('terms_of_service');
+      if (mounted) {
+        setState(() {
+          _policyText =
+              'PRIVACY POLICY v${policy['version']}\n\n${policy['content']}'
+              '\n\nTERMS OF SERVICE v${terms['version']}\n\n${terms['content']}';
+        });
+        showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Terms & Privacy Policy'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(child: Text(_policyText!)),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
     }
   }
 
@@ -124,7 +168,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   validator: (v) =>
                       v == null || v.trim().isEmpty ? 'Required' : null,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  value: _acceptLegal,
+                  onChanged: (v) => setState(() => _acceptLegal = v ?? false),
+                  title: const Text(
+                      'I accept the Terms of Service and the Privacy Policy'),
+                  subtitle: TextButton(
+                    onPressed: _showLegalDocuments,
+                    child: const Text('Read them'),
+                  ),
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+                const SizedBox(height: 8),
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
