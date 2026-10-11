@@ -366,6 +366,7 @@ def get_custom_css(dark: bool = False) -> str:
         /* --- Inputs --- */
         .stTextInput > div > div > input,
         .stNumberInput > div > div > input,
+        .stSelectbox input,
         .stSelectbox > div > div > div {{
             border-radius: 10px !important;
             border: 1px solid var(--mms-border) !important;
@@ -373,7 +374,8 @@ def get_custom_css(dark: bool = False) -> str:
             color: var(--mms-text) !important;
         }}
         .stTextInput > div > div > input:focus,
-        .stNumberInput > div > div > input:focus {{
+        .stNumberInput > div > div > input:focus,
+        .stSelectbox input:focus {{
             border-color: var(--mms-primary) !important;
             box-shadow: 0 0 0 3px var(--mms-primary-soft) !important;
         }}

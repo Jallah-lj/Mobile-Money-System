@@ -52,6 +52,10 @@ def test_register_page_renders_professional_layout(tmp_path, monkeypatch):
     assert "Mobile Money System" in hero[0]
     assert "Bank-grade security with 2FA" in hero[0]
 
+    # The page heading carries its icon (regression: it once rendered as
+    # literal "<i class=..." text because unsafe_allow_html was missing)
+    assert any(m.value.startswith("###") and "fa-user-plus" in m.value for m in at.markdown)
+
     # Form sections (match the section DIVs, not the stylesheet's .auth-section rules)
     sections = " ".join(m.value for m in at.markdown if "class='auth-section'" in m.value)
     for expected in ("Personal details", "Security", "Preferences", "Terms & privacy"):
