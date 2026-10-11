@@ -21,7 +21,16 @@ for the full feature overview (free pricing, security, quickstart).
 | `webhooks.py` | Signed outbound webhooks (HMAC-SHA256 + delivery log) |
 | `notifications.py` | SMS/email notifications (console + SMTP providers) |
 | `tickets.py` | Support ticketing (user tickets + admin queue) |
-| `database.py` | SQLite schema + idempotent migrations (auto-runs on startup) |
+| `privacy.py` | GDPR-style data export + account deletion (pseudonymized) |
+| `billers.py` | Registered billers for the Pay Bills page |
+| `config.py` | Operator settings (fees, AML thresholds, retention) in SQLite |
+| `events.py` | Async event dispatcher (webhooks/notifications off the payment path) |
+| `backup.py` | Database snapshots + restore (SQLite online backup API) |
+| `reconcile.py` | Ledger reconciliation (balances, double-entry invariant) |
+| `retention.py` | Configurable data-retention pruning |
+| `logging_config.py` | Structured JSON-lines operational logging |
+| `scheduler_worker.py` | Standalone worker: due payments + daily maintenance |
+| `database.py` | SQLite schema + idempotent migrations (WAL, indexes, auto-runs) |
 | `ledger.py` | Double-entry bookkeeping — every posted batch sums to zero |
 | `models.py` | `User`, `Transaction`, `LedgerEntry`, `AuditEntry` dataclasses |
 | `i18n.py` | Translations: English, Français, Español, Swahili |
@@ -38,6 +47,9 @@ MMS_API_KEY=change-me uvicorn mobile_money_system.api:app --reload
 
 # CLI
 python mobile_money_system/main.py
+
+# Standalone scheduler worker (fires due standing orders without the app)
+python -m mobile_money_system.scheduler_worker
 ```
 
 ## Pricing — free for everyone

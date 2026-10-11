@@ -34,5 +34,17 @@ services:
       timeout: 5s
       retries: 3
 
+  scheduler:
+    build: .
+    command: ["python", "-m", "mobile_money_system.scheduler_worker"]
+    environment:
+      - MMS_DB_PATH=/app/data/mobile_money.db
+      - MMS_SCHEDULER_TICK_SECONDS=60
+    volumes:
+      - mms-data:/app/data
+    depends_on:
+      - web
+    restart: unless-stopped
+
 volumes:
   mms-data:

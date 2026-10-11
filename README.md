@@ -81,6 +81,26 @@ Everyone gets the same rates and limits:
 - Security center (fraud rule configuration)
 - **Support ticket queue** (filters, reply, status flow)
 - **Webhook management** (endpoints, events, delivery log)
+- **Fee & AML rule configuration** (operator pricing, fraud thresholds)
+- **Registered billers** management (users pick them on Pay Bills)
+- **Backups** (create / download / restore, with auto-backup)
+- **Ledger reconciliation** (balances vs double-entry ledger, money conservation)
+- **Data retention** (configurable pruning of old security/ops rows)
+
+### ⚙️ Reliability & Operations
+- **Atomic money movement** — every balance change is one SQLite write
+  transaction (BEGIN IMMEDIATE): no double-spend under concurrency, no
+  partial state on failure
+- **SQLite WAL** + busy timeout + indexes on hot query paths
+- **Durable security state** — OTPs, login lockouts and API rate limits are
+  database-backed: they survive restarts and work across workers
+- **Async event dispatch** — webhooks/notifications deliver on a background
+  thread; a slow integration never delays a payment
+- **Background scheduler** — standing orders fire on a timer (in-app thread,
+  or the docker-compose `scheduler` worker) even when the app is idle
+- **API idempotency** — `Idempotency-Key` on transfers makes retries safe
+- **Structured logging** — JSON-lines operational log (`logs/mms.log`)
+- **Detailed `/health`** — database status, journal mode, counts, uptime
 
 ---
 
@@ -120,11 +140,15 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-97 tests cover the transaction core, compliance (KYC/AML), money requests,
+151 tests cover the transaction core, compliance (KYC/AML), money requests,
 security hardening (lockout, OTP, audit trail, sessions, 2FA, API rate
-limiting), beneficiaries, scheduled payments, analytics & statements, and
-the integrations (webhook signatures & delivery, notifications, tickets).
-CI runs the same suite on every push (`.github/workflows/tests.yml`).
+limiting), atomicity under concurrency, durable security state, async event
+dispatch, the background scheduler, beneficiaries, scheduled payments,
+analytics & statements, privacy data controls, backups, reconciliation,
+retention, idempotency, and the integrations (webhook signatures & delivery,
+notifications, tickets).
+CI runs the same suite on every push (`.github/workflows/tests.yml`) plus
+ruff + mypy (`.github/workflows/lint.yml`).
 
 ---
 
@@ -158,6 +182,11 @@ set_admin.py        Promote a user to admin (SQLite)
 ---
 
 ## ☁️ Deployment
+
+Docker (recommended): `docker compose up --build` runs the web app, the REST
+API, and a scheduler worker sharing one database volume — see
+[DEPLOYMENT.md](DEPLOYMENT.md) for TLS, `MMS_API_KEY`, backups, and the
+production checklist.
 
 The Azure Web App workflow (`.github/workflows/main_jallah-webapp-dev-cc.yml`)
 builds and deploys on pushes to `main`.

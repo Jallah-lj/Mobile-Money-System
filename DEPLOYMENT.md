@@ -13,6 +13,7 @@ docker compose up --build
 |---------|-----|-------|
 | Web app (Streamlit) | http://localhost:8501 | The mobile-money UI |
 | REST API (FastAPI) | http://localhost:8000 | Swagger docs at `/docs` |
+| Scheduler worker | (no port) | Fires due standing orders + daily retention/auto-backup, even with the app closed |
 | Health checks | `/_stcore/health`, `/health` | Wired into compose healthchecks |
 
 Both services share one SQLite database in the `mms-data` named volume
